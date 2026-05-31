@@ -1,0 +1,10 @@
+{
+  "id": "google-keep-sync",
+  "name": "Google Keep Sync",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Syncs Google Keep notes and checklist items to your Obsidian vault securely.",
+  "author": "Alex Jarecki",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

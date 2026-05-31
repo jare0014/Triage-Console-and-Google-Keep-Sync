@@ -1,0 +1,12 @@
+venv/
+env/
+__pycache__/
+*.pyc
+kim.log
+keep_credentials.json
+.env
+data.json
+settings.cfg
+import/
+mdfiles/
+00_Imports/

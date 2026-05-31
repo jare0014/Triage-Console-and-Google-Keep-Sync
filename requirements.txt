@@ -1,0 +1,11 @@
+###### Requirements without Version Specifiers ######`
+gkeepapi
+keyring
+click
+pillow
+
+###### Requirements with Version Specifiers worked with Python 3.7.3 ######`
+#gkeepapi == 0.13.1
+#keyring == 17.1.1
+#click == 7.1.2
+     
