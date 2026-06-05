@@ -1,12 +1,12 @@
+# Virtual Environment
 venv/
 env/
+
+# Python Cache
 __pycache__/
 *.pyc
+
+# Logs and Local Credentials
 kim.log
 keep_credentials.json
 .env
-data.json
-settings.cfg
-import/
-mdfiles/
-00_Imports/

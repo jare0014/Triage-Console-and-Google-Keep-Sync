@@ -649,7 +649,7 @@ def process_quicklog(keep, note_id):
             try:
                 target_header = Config().get("log_header")
             except Exception:
-                target_header = os.environ.get("KIM_LOG_HEADER") or "## 🪵 Log"
+                target_header = os.environ.get("KIM_LOG_HEADER") or "### Quicklog"
             
             # Find the header
             header_idx = -1
@@ -658,6 +658,13 @@ def process_quicklog(keep, note_id):
                     header_idx = idx
                     break
                     
+            if header_idx == -1:
+                # Fallback to general Log header
+                for idx, line in enumerate(lines):
+                    if "## 🪵 Log" in line:
+                        header_idx = idx
+                        break
+                        
             if header_idx != -1:
                 # Find the end of that section (either next header or end of file)
                 insert_idx = header_idx + 1
