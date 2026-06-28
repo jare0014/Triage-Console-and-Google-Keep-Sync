@@ -66,6 +66,7 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
         
         // Build env variables
         const env = Object.assign({}, process.env, {
+            OPENSSL_CONF: '',
             KIM_TOKEN: keepToken,
             KIM_GOOGLE_USERID: this.settings.googleUserid,
             KIM_OUTPUT_PATH: path.isAbsolute(this.settings.outputPath) ? this.settings.outputPath : path.join(vaultPath, this.settings.outputPath),
@@ -142,10 +143,14 @@ try:
 except Exception as e:
     sys.stderr.write(str(e))
 `;
+        const env = Object.assign({}, process.env, {
+            OPENSSL_CONF: process.platform === 'win32' ? 'NUL' : '/dev/null'
+        });
         
         return new Promise((resolve) => {
             const child = spawn(pythonCmd, ['-c', pythonScript, username, token], {
-                cwd: scriptDir
+                cwd: scriptDir,
+                env: env
             });
             let stderr = '';
             child.stderr.on('data', (data) => {
@@ -362,7 +367,10 @@ except Exception as e:
 `;
                 
                 const child = spawn(pythonCmd, ['-c', pythonScript, email, tempCookie], {
-                    cwd: scriptDir
+                    cwd: scriptDir,
+                    env: Object.assign({}, process.env, {
+                        OPENSSL_CONF: ''
+                    })
                 });
                 
                 let stdout = "";

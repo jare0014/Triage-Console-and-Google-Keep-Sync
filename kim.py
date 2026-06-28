@@ -915,7 +915,7 @@ def ui_login(master_token, opts):
     except Exception as e:
         if isinstance(e, ValueError) and "non-interactive" in str(e):
             raise e
-        raise ValueError("Username or password is incorrect") from e
+        raise ValueError(f"Authentication failed: {str(e)}") from e
 
 def ui_query(keep, search_term, opts):
     try:
