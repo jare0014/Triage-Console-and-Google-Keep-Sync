@@ -9,7 +9,60 @@ const DEFAULT_SETTINGS = {
     logHeader: '## 🪵 Log',
     syncOnStartup: true,
     enableIntervalSync: true,
-    intervalSyncMinutes: 360
+    intervalSyncMinutes: 360,
+    
+    // AI Triage Console settings
+    llmProvider: 'gemini',
+    llmModel: 'gemini-2.5-flash',
+    ollamaUrl: 'http://localhost:11434',
+    geminiApiKeyId: 'google-keep-sync-gemini-key',
+    todoistTokenId: 'google-keep-sync-todoist-token',
+    triageRules: [
+        {
+            category: "daughter_quote",
+            displayName: "💬 Esther's Quotes",
+            description: "a quote, funny saying, or conversation with a child/daughter (usually Esther or Amalia).",
+            targetPath: "05_People/Esther.md",
+            buttonLabel: "💬 Append to Esther",
+            templatePath: "99_System/Templates/Person_Template.md"
+        },
+        {
+            category: "bumper_sticker",
+            displayName: "🚗 Jokes & Bumper Stickers",
+            description: "funny bumper stickers, jokes, license plates, or humorous observations.",
+            targetPath: "06_Entertainment/Bumper Stickers and License Plates List.md",
+            buttonLabel: "🚗 Append to Stickers"
+        },
+        {
+            category: "diary_entry",
+            displayName: "📝 Diary & Journal Entries",
+            description: "personal thoughts, logs, reflections, health notes, daily activities, or journal entries.",
+            targetPath: "02_Journal/01_Daily/YYYY-MM-DD.md",
+            buttonLabel: "📝 Log to Daily",
+            templatePath: "99_System/Templates/Daily Note Template.md"
+        },
+        {
+            category: "task",
+            displayName: "✅ Tasks & Reminders",
+            description: "a to-do, action item, reminder, chore, or shopping list item.",
+            targetPath: "Todoist",
+            buttonLabel: "✅ Todoist"
+        },
+        {
+            category: "article",
+            displayName: "🎓 Articles & Web URLs",
+            description: "any note that contains an external article, document, or Web URL link.",
+            targetPath: "01_Incubator/",
+            buttonLabel: "📥 Send to Incubator"
+        },
+        {
+            category: "suggested_note",
+            displayName: "📂 Evolving Logs & Topics",
+            description: "any other general log, entity, reference, or idea that belongs in a specific file.",
+            targetPath: "01_Inbox/",
+            buttonLabel: "📝 Append"
+        }
+    ]
 };
 
 class GoogleKeepSyncPlugin extends obsidian.Plugin {
@@ -24,6 +77,328 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
             id: 'sync-notes',
             name: 'Sync Notes',
             callback: () => this.runKeepSync()
+        });
+
+        // Register custom triage code block processor
+        this.registerMarkdownCodeBlockProcessor("google-keep-triage", async (source, el, ctx) => {
+            const moment = window.moment;
+            el.empty();
+            const wrapper = el.createDiv({ cls: 'google-keep-triage-console-wrapper' });
+            wrapper.style.padding = '10px 0';
+            
+            const renderConsole = async () => {
+                wrapper.empty();
+                
+                const sourceFolder = this.settings.outputPath || "00_Imports";
+                const limit = 5;
+                
+                const markdownFiles = this.app.vault.getMarkdownFiles().filter(file => {
+                    const norm = file.path.replace(/\\/g, '/');
+                    return norm.startsWith(sourceFolder + '/') && file.name !== "00_Triage_Console.md" && !norm.includes('/media/');
+                })
+                .sort((a, b) => b.stat.ctime - a.stat.ctime)
+                .slice(0, limit);
+                
+                // Auto-archiver
+                const archiveFolder = this.app.vault.getAbstractFileByPath("99_Archive");
+                if (archiveFolder) {
+                    const allVaultFiles = this.app.vault.getMarkdownFiles();
+                    let movedCount = 0;
+                    for (let f of allVaultFiles) {
+                        if (!f.path.startsWith("99_Archive/")) {
+                            const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                            if (fm && fm.status === "archived") {
+                                try {
+                                    let destFolder = "99_Archive/General";
+                                    if (f.path.startsWith("00_Imports/")) {
+                                        destFolder = "99_Archive/Clippings";
+                                    } else if (f.path.startsWith("01_Incubator/")) {
+                                        destFolder = "99_Archive/Incubator";
+                                    }
+                                    
+                                    if (!this.app.vault.getAbstractFileByPath(destFolder)) {
+                                        await this.app.vault.createFolder(destFolder);
+                                    }
+                                    await this.app.fileManager.renameFile(f, `${destFolder}/${f.name}`);
+                                    movedCount++;
+                                } catch(e) {
+                                    console.error("Auto-archiving failed for:", f.path, e);
+                                }
+                            }
+                        }
+                    }
+                    if (movedCount > 0) {
+                        new obsidian.Notice(`📦 Auto-archived ${movedCount} notes to local 99_Archive.`);
+                    }
+                }
+                
+                // Check unclassified files
+                const unclassified = [];
+                for (let f of markdownFiles) {
+                    const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                    if (!fm || fm.triage_classified !== true) {
+                        unclassified.push(f);
+                    }
+                }
+                
+                if (unclassified.length > 0) {
+                    const progressEl = wrapper.createDiv({ 
+                        text: `⏳ Classifying new imports (0/${unclassified.length})...`,
+                    });
+                    progressEl.style.fontSize = "1.1em";
+                    progressEl.style.color = "var(--text-accent)";
+                    progressEl.style.margin = "10px 0";
+                    
+                    let count = 0;
+                    for (let f of unclassified) {
+                        try {
+                            await this.classifyFile(f);
+                        } catch(e) {
+                            console.error("Failed to classify:", f.name, e);
+                        }
+                        count++;
+                        progressEl.setText(`⏳ Classifying new imports (${count}/${unclassified.length})...`);
+                    }
+                    progressEl.remove();
+                    await renderConsole();
+                    return;
+                }
+                
+                if (markdownFiles.length === 0) {
+                    wrapper.createEl('h3', { 
+                        text: '✅ All Clear',
+                        style: 'color: var(--text-success); font-weight: bold; margin-top: 15px;'
+                    });
+                    return;
+                }
+                
+                const groups = {};
+                for (let f of markdownFiles) {
+                    const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                    if (fm && fm.triage_classified) {
+                        const cat = fm.triage_category || "suggested_note";
+                        if (!groups[cat]) groups[cat] = [];
+                        groups[cat].push({ file: f, fm: fm });
+                    } else {
+                        if (!groups["suggested_note"]) groups["suggested_note"] = [];
+                        groups["suggested_note"].push({ file: f, fm: { triage_suggested_path: "01_Inbox/" + f.name, triage_clean_content: f.basename } });
+                    }
+                }
+                
+                const batchContainer = wrapper.createDiv({ style: 'margin-bottom: 20px; display: flex; gap: 10px;' });
+                const btnRouteAll = batchContainer.createEl("button", { text: "⚡ Approve & Route All" });
+                btnRouteAll.style.backgroundColor = "var(--interactive-accent)";
+                btnRouteAll.style.color = "var(--text-on-accent)";
+                btnRouteAll.style.fontWeight = "bold";
+                btnRouteAll.style.padding = "6px 16px";
+                btnRouteAll.onclick = async () => {
+                    new obsidian.Notice("Routing all categorized notes in batch...");
+                    for (let cat in groups) {
+                        if (cat === "article") continue;
+                        for (let item of groups[cat]) {
+                            const { file, fm } = item;
+                            const path = fm.triage_suggested_path;
+                            const cleanContent = fm.triage_clean_content || file.basename;
+                            const date = fm.triage_date || moment().format("YYYY-MM-DD");
+                            
+                            try {
+                                if (cat === "task") {
+                                    await this.createTodoistTask(file, cleanContent);
+                                } else if (cat === "diary_entry") {
+                                    await this.logDiaryEntry(file, cleanContent, date);
+                                } else {
+                                    await this.appendToNote(file, path, cleanContent, date);
+                                }
+                            } catch(e) {
+                                console.error("Batch routing failed:", file.name, e);
+                            }
+                        }
+                    }
+                    new obsidian.Notice("Batch routing complete!");
+                    await renderConsole();
+                };
+                
+                const rulesList = this.settings.triageRules || [];
+                const categoriesMap = {};
+                for (const r of rulesList) {
+                    categoriesMap[r.category] = {
+                        title: r.displayName,
+                        buttonLabel: r.buttonLabel,
+                        targetPath: r.targetPath
+                    };
+                }
+                const categoriesInfo = Object.assign({
+                    daughter_quote: { title: "💬 Esther's Quotes", buttonLabel: "💬 Append to Esther" },
+                    bumper_sticker: { title: "🚗 Jokes & Bumper Stickers", buttonLabel: "🚗 Append to Stickers" },
+                    diary_entry: { title: "📝 Diary & Journal Entries", buttonLabel: "📝 Log to Daily" },
+                    task: { title: "✅ Tasks & Reminders", buttonLabel: "✅ Todoist" },
+                    article: { title: "🎓 Articles & Web URLs", buttonLabel: "📥 Send to Incubator" },
+                    suggested_note: { title: "📂 Evolving Logs & Topics", buttonLabel: "📝 Append" }
+                }, categoriesMap);
+                
+                for (let cat of Object.keys(categoriesInfo)) {
+                    const items = groups[cat];
+                    if (!items || items.length === 0) continue;
+                    
+                    const info = categoriesInfo[cat];
+                    wrapper.createEl('h3', { 
+                        text: info.title, 
+                        style: 'margin-top: 20px; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 5px;' 
+                    });
+                    
+                    const tableContainer = wrapper.createDiv({ style: 'overflow-x: auto; margin-bottom: 15px;' });
+                    const table = tableContainer.createEl('table');
+                    table.style.width = '100%';
+                    table.style.borderCollapse = 'collapse';
+                    
+                    const thead = table.createEl('thead');
+                    const headerRow = thead.createEl('tr');
+                    
+                    const headers = cat === "article" 
+                        ? ["Note", "Topic", "Target Suggestion", "Content / Summary", "Actions"]
+                        : ["Note", "Target Suggestion", "Content / Summary", "Actions"];
+                        
+                    for (let h of headers) {
+                        const th = headerRow.createEl('th', { text: h });
+                        th.style.textAlign = 'left';
+                        th.style.padding = '8px';
+                        th.style.borderBottom = '2px solid var(--background-modifier-border)';
+                    }
+                    
+                    const tbody = table.createEl('tbody');
+                    
+                    for (let item of items) {
+                        const { file, fm } = item;
+                        let targetPath = fm.triage_suggested_path || "01_Inbox/" + file.name;
+                        if (targetPath.startsWith("03_Knowledge/")) {
+                            targetPath = targetPath.replace("03_Knowledge/", "01_Incubator/");
+                        }
+                        const date = fm.triage_date || "";
+                        
+                        let displayContent = fm.triage_clean_content || file.basename;
+                        if (cat === "article") {
+                            displayContent = `<strong>Summary:</strong> ${fm.triage_summary || "None"}<br><a href="${fm.triage_url}" target="_blank">${fm.triage_url}</a>`;
+                        }
+                        
+                        const targetFileExists = this.app.vault.getAbstractFileByPath(targetPath);
+                        let targetDisplay = targetPath;
+                        if (cat !== "task") {
+                            targetDisplay += targetFileExists ? " (Exists)" : " (New Note)";
+                        }
+                        
+                        const row = tbody.createEl('tr');
+                        row.style.borderBottom = '1px solid var(--background-modifier-border)';
+                        
+                        // Column 1: Note Link
+                        const tdNote = row.createEl('td');
+                        tdNote.style.padding = '8px';
+                        const aLink = tdNote.createEl('a', { text: file.basename, href: file.path, cls: 'internal-link' });
+                        aLink.onclick = (e) => {
+                            e.preventDefault();
+                            this.app.workspace.getLeaf(false).openFile(file);
+                        };
+                        
+                        // Column 2: Topic (only for article)
+                        let topicInput = null;
+                        if (cat === "article") {
+                            const tdTopic = row.createEl('td');
+                            tdTopic.style.padding = '8px';
+                            topicInput = tdTopic.createEl("input");
+                            topicInput.type = "text";
+                            topicInput.value = fm.triage_topic || "General Research";
+                            topicInput.style.width = "120px";
+                            topicInput.style.padding = "4px";
+                            topicInput.style.borderRadius = "4px";
+                            topicInput.style.border = "1px solid var(--border-color)";
+                            topicInput.onchange = async () => {
+                                const newTopic = topicInput.value.trim();
+                                await this.app.fileManager.processFrontMatter(file, fMatter => {
+                                    fMatter['triage_topic'] = newTopic;
+                                });
+                            };
+                        }
+                        
+                        // Column 3: Target Suggestion
+                        const tdTarget = row.createEl('td', { text: targetDisplay });
+                        tdTarget.style.padding = '8px';
+                        
+                        // Column 4: Content/Summary
+                        const tdContent = row.createEl('td');
+                        tdContent.style.padding = '8px';
+                        tdContent.innerHTML = displayContent;
+                        
+                        // Column 5: Actions
+                        const tdActions = row.createEl('td');
+                        tdActions.style.padding = '8px';
+                        const actionContainer = tdActions.createDiv({ style: 'display: flex; gap: 6px; flex-wrap: wrap;' });
+                        
+                        let primaryBtnLabel = info.buttonLabel;
+                        if (cat === "suggested_note" || cat === "general_note") {
+                            const filename = targetPath.split("/").pop().replace(".md", "");
+                            primaryBtnLabel = targetFileExists ? `📝 Append to ${filename}` : `➕ Create & Append to ${filename}`;
+                        }
+                        
+                        const btnPrimary = actionContainer.createEl("button", { text: primaryBtnLabel });
+                        btnPrimary.onclick = async () => {
+                            btnPrimary.disabled = true;
+                            if (cat === "task") {
+                                await this.createTodoistTask(file, fm.triage_clean_content);
+                            } else if (cat === "diary_entry") {
+                                await this.logDiaryEntry(file, fm.triage_clean_content, date);
+                            } else if (cat === "article") {
+                                const finalTopic = topicInput ? topicInput.value.trim() : (fm.triage_topic || "General Research");
+                                await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary, targetPath, finalTopic);
+                            } else {
+                                await this.appendToNote(file, targetPath, fm.triage_clean_content, date);
+                            }
+                            await renderConsole();
+                        };
+                        
+                        if (cat === "article") {
+                            const btnArchive = actionContainer.createEl("button", { text: "📦 Archive" });
+                            btnArchive.onclick = async () => {
+                                btnArchive.disabled = true;
+                                await this.archiveArticle(file, fm.triage_url, fm.triage_summary);
+                                await renderConsole();
+                            };
+                        }
+                        
+                        const btnManual = actionContainer.createEl("button", { text: "📂 Manual" });
+                        btnManual.onclick = () => {
+                            const dropdown = document.createElement("select");
+                            dropdown.style.padding = "2px";
+                            dropdown.style.fontSize = "0.9em";
+                            dropdown.innerHTML = `
+                                <option value="">Move to...</option>
+                                <option value="01_Inbox">📥 Inbox</option>
+                                <option value="01_Incubator">❔ Incubator</option>
+                                <option value="03_Knowledge">🎓 Knowledge (stub)</option>
+                            `;
+                            dropdown.onchange = async () => {
+                                const val = dropdown.value;
+                                if (!val) return;
+                                dropdown.disabled = true;
+                                if (val === "03_Knowledge") {
+                                    await this.app.fileManager.processFrontMatter(file, fMatter => fMatter['status'] = 'stub');
+                                }
+                                await this.app.fileManager.renameFile(file, `${val}/${file.name}`);
+                                new obsidian.Notice(`Moved to ${val}`);
+                                await renderConsole();
+                            };
+                            btnManual.replaceWith(dropdown);
+                        };
+                        
+                        const btnTrash = actionContainer.createEl("button", { text: "🗑️" });
+                        btnTrash.onclick = async () => {
+                            btnTrash.disabled = true;
+                            await this.app.vault.trash(file, true);
+                            await renderConsole();
+                        };
+                    }
+                }
+            };
+            
+            await renderConsole();
         });
 
         // Setup background intervals and startup sync
@@ -174,6 +549,427 @@ except Exception as e:
             const minutes = Math.max(1, this.settings.intervalSyncMinutes || 360);
             this.syncInterval = window.setInterval(() => this.runKeepSync(), minutes * 60 * 1000);
             this.registerInterval(this.syncInterval);
+        }
+    }
+
+    async callLLM(prompt, isJson = false) {
+        const provider = this.settings.llmProvider || 'gemini';
+        const model = this.settings.llmModel || 'gemini-2.5-flash';
+        const ollamaUrl = this.settings.ollamaUrl || 'http://localhost:11434';
+        
+        if (provider === 'ollama') {
+            const url = `${ollamaUrl}/api/generate`;
+            const body = {
+                model: model,
+                prompt: prompt,
+                stream: false
+            };
+            if (isJson) {
+                body.format = 'json';
+            }
+            const res = await obsidian.requestUrl({
+                url: url,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (res.status === 200) {
+                return JSON.parse(res.text).response;
+            }
+            throw new Error(`Ollama error: ${res.status}`);
+        } else {
+            const keyId = this.settings.geminiApiKeyId || 'google-keep-sync-gemini-key';
+            const apiKey = await Promise.resolve(this.app.secretStorage.getSecret(keyId)) || '';
+            if (!apiKey) {
+                throw new Error("Gemini API key is not configured in Google Keep Sync settings.");
+            }
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+            const body = {
+                contents: [{ parts: [{ text: prompt }] }]
+            };
+            if (isJson) {
+                body.generationConfig = { responseMimeType: 'application/json' };
+            }
+            const res = await obsidian.requestUrl({
+                url: url,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (res.status === 200) {
+                const data = JSON.parse(res.text);
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) return text;
+                throw new Error("Empty response from Gemini.");
+            }
+            throw new Error(`Gemini error: ${res.status}`);
+        }
+    }
+
+    async scrapeUrl(url) {
+        try {
+            const response = await obsidian.requestUrl({
+                url: url,
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            });
+            if (response.status !== 200) return null;
+            
+            const htmlText = response.text;
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlText, "text/html");
+            const title = doc.querySelector("title")?.textContent?.trim() || "";
+            const paragraphs = Array.from(doc.querySelectorAll("p"))
+                .map(p => p.textContent.trim())
+                .filter(Boolean);
+            const body = paragraphs.join(" ").substring(0, 3000);
+            return { title, body };
+        } catch (e) {
+            console.error("Scrape failed:", e);
+            return null;
+        }
+    }
+
+    async classifyFile(file) {
+        const content = await this.app.vault.read(file);
+        
+        // Check if contains external URL
+        const urls = content.match(/https?:\/\/[^\s\)\]\u200b]+/g);
+        let targetUrl = null;
+        if (urls) {
+            for (let url of urls) {
+                if (!url.includes('keep.google.com')) {
+                    targetUrl = url.replace(/^[\[\(\{\s]+|[\]\)\}\s]+$/g, '');
+                    break;
+                }
+            }
+        }
+        
+        if (targetUrl) {
+            const page = await this.scrapeUrl(targetUrl);
+            let title = file.basename;
+            let body = content;
+            if (page) {
+                body = page.body;
+                if (page.title && page.title.length > 10) title = page.title;
+            }
+            
+            const articlePrompt = `You are a personal reading assistant. Analyze this web page content.
+Title: ${title}
+Content: ${body}
+
+Generate a concise 2-3 sentence summary (no double quotes). Suggest a clean, descriptive title for the article, a safe, clean filename for saving it in the vault (with .md extension, removing all characters that are invalid in Windows/Mac filenames: * " \\ / < > : | ?), and a concise one- or two-word topic classification (e.g. "Physics", "Artificial Intelligence", "Evolutionary Biology", "History", etc.).
+
+Note: If the content is short and contains a web URL, extract and infer a clean, descriptive title and filename from the URL path/slug. Do NOT use generic names like "Source Phys.org" or "Source Article".
+
+Response MUST be a JSON object with these exact keys:
+{
+  "summary": "the 2-3 sentence summary",
+  "suggested_title": "a clean, descriptive title for the article",
+  "suggested_filename": "Cleaned Article Title.md",
+  "suggested_topic": "concise one- or two-word topic"
+}
+`;
+            
+            let summary = "No summary available.";
+            let cleanTitle = title;
+            let cleanFilename = file.name;
+            let suggestedTopic = "";
+            
+            try {
+                const resText = await this.callLLM(articlePrompt, true);
+                const result = JSON.parse(resText.replace(/```json|```/g, "").trim());
+                summary = result.summary || "No summary available.";
+                cleanTitle = result.suggested_title || title;
+                cleanFilename = result.suggested_filename || file.name;
+                suggestedTopic = result.suggested_topic || "";
+                cleanFilename = cleanFilename.replace(/[*"\\/<>:|?]/g, "").trim();
+                if (!cleanFilename.endsWith(".md")) {
+                    cleanFilename += ".md";
+                }
+            } catch (err) {
+                console.error("LLM Article Analysis failed:", err);
+                cleanFilename = file.basename.replace(/[*"\\/<>:|?]/g, "").trim() + ".md";
+                cleanTitle = cleanFilename.replace(/\.md$/, "");
+            }
+            
+            let topic = "General Research";
+            if (suggestedTopic) {
+                topic = suggestedTopic.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+            } else {
+                const keywords = ["quantum", "ai", "physics", "biology", "brain", "neuroscience", "math", "software", "google", "git", "sql"];
+                for (const kw of keywords) {
+                    if (cleanTitle.toLowerCase().includes(kw)) {
+                        topic = kw.charAt(0).toUpperCase() + kw.slice(1);
+                        break;
+                    }
+                }
+            }
+            
+            await this.app.fileManager.processFrontMatter(file, fm => {
+                fm['triage_category'] = 'article';
+                fm['triage_classified'] = true;
+                fm['triage_suggested_path'] = `01_Incubator/${cleanFilename}`;
+                fm['triage_url'] = targetUrl;
+                fm['triage_summary'] = summary;
+                fm['triage_title'] = cleanTitle;
+                fm['triage_topic'] = topic;
+            });
+        } else {
+            // Build prompt dynamically from settings
+            const rules = this.settings.triageRules || [];
+            const categoriesPrompt = rules.map(r => `- "${r.category}": ${r.description}`).join("\n");
+            const pathsPrompt = rules.map(r => `- ${r.displayName} -> "${r.targetPath}"`).join("\n");
+            
+            const prompt = `You are a personal assistant. Analyze the note below and classify it into one of these categories:
+${categoriesPrompt}
+
+Also, suggest a logical destination path in the Obsidian vault:
+${pathsPrompt}
+
+Extract the note's original creation date if available (in YYYY-MM-DD format).
+
+Response MUST be a JSON object with these exact keys:
+{
+  "category": "matching_category_id",
+  "suggested_path": "folder/filename.md",
+  "clean_content": "the note content with stamps and Keep links at the bottom removed",
+  "date": "YYYY-MM-DD"
+}
+
+Note details:
+Title: ${file.basename}
+Content: ${content}`;
+            
+            try {
+                const resText = await this.callLLM(prompt, true);
+                const result = JSON.parse(resText.replace(/```json|```/g, "").trim());
+                await this.app.fileManager.processFrontMatter(file, fm => {
+                    fm['triage_category'] = result.category;
+                    fm['triage_classified'] = true;
+                    fm['triage_suggested_path'] = result.suggested_path;
+                    fm['triage_clean_content'] = result.clean_content;
+                    fm['triage_date'] = result.date;
+                });
+            } catch (err) {
+                console.error("Semantic classification failed:", err);
+                const cleanName = file.basename.replace(/[*"\\/<>:|?]/g, "").trim() + ".md";
+                await this.app.fileManager.processFrontMatter(file, fm => {
+                    fm['triage_category'] = 'suggested_note';
+                    fm['triage_classified'] = true;
+                    fm['triage_suggested_path'] = '01_Inbox/' + cleanName;
+                    fm['triage_clean_content'] = content;
+                    fm['triage_date'] = new Date().toISOString().split('T')[0];
+                });
+            }
+        }
+    }
+
+    async appendToNote(file, targetPath, cleanContent, dateStr) {
+        let formattedDate = new Date().toISOString().split('T')[0];
+        if (dateStr) {
+            formattedDate = dateStr;
+        }
+        const dateHeader = `### ${formattedDate}`;
+        const textToAppend = `\n\n${dateHeader}\n\n${cleanContent}\n`;
+        
+        let targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+        if (!targetFile) {
+            let templateContent = "";
+            if (targetPath.startsWith("05_People/")) {
+                const templateFile = this.app.vault.getAbstractFileByPath("99_System/Templates/Person_Template.md");
+                if (templateFile) {
+                    templateContent = await this.app.vault.read(templateFile);
+                    const name = targetPath.split("/").pop().replace(".md", "");
+                    templateContent = templateContent.replace(/#\s+\[\[Person_Template\|Person_Template\]\]/, `# [[${name}|${name}]]`);
+                }
+            } else if (targetPath.startsWith("02_Journal/01_Daily/")) {
+                const templateFile = this.app.vault.getAbstractFileByPath("99_System/Templates/Daily Note Template.md");
+                if (templateFile) {
+                    templateContent = await this.app.vault.read(templateFile);
+                }
+            }
+            
+            const dirPath = targetPath.substring(0, targetPath.lastIndexOf("/"));
+            if (dirPath && !this.app.vault.getAbstractFileByPath(dirPath)) {
+                await this.app.vault.createFolder(dirPath);
+            }
+            const initialContent = templateContent ? templateContent.trimEnd() + textToAppend : `# ${targetPath.split("/").pop().replace(".md", "")}\n\n${textToAppend}`;
+            await this.app.vault.create(targetPath, initialContent);
+            new obsidian.Notice(`Created new note: ${targetPath}`);
+        } else {
+            let content = await this.app.vault.read(targetFile);
+            let newContent = content.trimEnd() + textToAppend;
+            await this.app.vault.modify(targetFile, newContent);
+        }
+        await this.app.vault.trash(file, true);
+    }
+
+    async logDiaryEntry(file, cleanContent, dateStr) {
+        let actualDateStr = new Date().toISOString().split('T')[0];
+        if (dateStr) {
+            actualDateStr = dateStr;
+        }
+        const targetPath = `02_Journal/01_Daily/${actualDateStr}.md`;
+        const logLine = `\n\n### Quicklog (Keep Sync)\n\n${cleanContent}\n`;
+        
+        let dailyFile = this.app.vault.getAbstractFileByPath(targetPath);
+        if (dailyFile) {
+            let content = await this.app.vault.read(dailyFile);
+            let lines = content.split("\n");
+            let insertIdx = -1;
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes("### Quicklog")) {
+                    insertIdx = i + 1;
+                    break;
+                }
+            }
+            if (insertIdx === -1) {
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].includes("## 🪵 Log")) {
+                        insertIdx = i + 1;
+                        break;
+                    }
+                }
+            }
+            
+            if (insertIdx !== -1) {
+                lines.splice(insertIdx, 0, logLine);
+                await this.app.vault.modify(dailyFile, lines.join("\n"));
+            } else {
+                await this.app.vault.modify(dailyFile, content.trimEnd() + logLine);
+            }
+        } else {
+            let templateContent = "";
+            const templateFile = this.app.vault.getAbstractFileByPath("99_System/Templates/Daily Note Template.md");
+            if (templateFile) {
+                templateContent = await this.app.vault.read(templateFile);
+                templateContent = templateContent.replace("scores:", `scores:\njournal: Daily Notes\njournal-date: ${actualDateStr}`);
+            }
+            const initialContent = templateContent ? templateContent.trimEnd() + logLine : `# ${actualDateStr}\n\n${logLine}`;
+            await this.app.vault.create(targetPath, initialContent);
+            new obsidian.Notice(`Created Daily Note: ${actualDateStr}`);
+        }
+        await this.app.vault.trash(file, true);
+    }
+
+    async createTodoistTask(file, text) {
+        let tokenKey = this.settings.todoistTokenId || 'google-keep-sync-todoist-token';
+        const todoistToken = await Promise.resolve(this.app.secretStorage.getSecret(tokenKey)) || '34e525beddd77da5fd11625a5dcc20d807e2924e';
+        
+        if (!todoistToken) {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const dailyNotePath = `02_Journal/01_Daily/${todayStr}.md`;
+            let dailyFile = this.app.vault.getAbstractFileByPath(dailyNotePath);
+            const taskLine = `\n- [ ] ${text} #task`;
+            if (dailyFile) {
+                let content = await this.app.vault.read(dailyFile);
+                await this.app.vault.modify(dailyFile, content.trimEnd() + taskLine);
+                new obsidian.Notice(`Todoist Token missing: task added to today's Daily Note.`);
+            }
+        } else {
+            try {
+                const response = await obsidian.requestUrl({
+                    url: "https://api.todoist.com/rest/v2/tasks",
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${todoistToken}`
+                    },
+                    body: JSON.stringify({ content: text })
+                });
+                if (response.status === 200 || response.status === 201) {
+                    new obsidian.Notice(`Todoist task created: ${text}`);
+                } else {
+                    throw new Error(`Status ${response.status}`);
+                }
+            } catch(e) {
+                console.error("Todoist API error:", e);
+                const todayStr = new Date().toISOString().split('T')[0];
+                const dailyNotePath = `02_Journal/01_Daily/${todayStr}.md`;
+                let dailyFile = this.app.vault.getAbstractFileByPath(dailyNotePath);
+                const taskLine = `\n- [ ] ${text} #task`;
+                if (dailyFile) {
+                    let content = await this.app.vault.read(dailyFile);
+                    await this.app.vault.modify(dailyFile, content.trimEnd() + taskLine);
+                    new obsidian.Notice(`Todoist API failed: task added to today's Daily Note.`);
+                }
+            }
+        }
+        await this.app.vault.trash(file, true);
+    }
+
+    async keepArticle(file, title, url, summary, targetPath, topic) {
+        const structured = `---
+url: ${url}
+topic: ${topic || "General Research"}
+summarization: "${summary.replace(/"/g, '\\"')}"
+notebook_id: ""
+status: candidate
+---
+# ${title}
+
+**Original Source**: [${url}](${url})
+
+## 📝 Summarization
+${summary}
+
+## 🛠️ NotebookLM Artifacts
+\`\`\`meta-bind-button
+label: 🧠 Generate Mind Map
+icon: "git-branch"
+style: primary
+hidden: false
+actions:
+  - type: command
+    command: knowledge-pipeline:generate-mind-map
+\`\`\`
+\`\`\`meta-bind-button
+label: 🎙️ Generate Podcast (Audio)
+icon: "headphones"
+style: primary
+hidden: false
+actions:
+  - type: command
+    command: knowledge-pipeline:generate-podcast
+\`\`\`
+\`\`\`meta-bind-button
+label: 🎬 Generate Cinematic Video
+icon: "video"
+style: primary
+hidden: false
+actions:
+  - type: command
+    command: knowledge-pipeline:generate-video
+\`\`\`
+`;
+        await this.app.vault.modify(file, structured);
+        const destPath = targetPath || `01_Incubator/${file.name}`;
+        const dirPath = destPath.substring(0, destPath.lastIndexOf("/"));
+        if (dirPath && !this.app.vault.getAbstractFileByPath(dirPath)) {
+            await this.app.vault.createFolder(dirPath);
+        }
+        await this.app.fileManager.renameFile(file, destPath);
+        new obsidian.Notice(`Sent article to Incubator: ${title}`);
+    }
+
+    async archiveArticle(file, url, summary) {
+        await this.app.fileManager.processFrontMatter(file, fm => {
+            fm['status'] = 'archived';
+            fm['url'] = url;
+            fm['summarization'] = summary;
+        });
+        const archiveExists = this.app.vault.getAbstractFileByPath("99_Archive");
+        if (archiveExists) {
+            const clipPath = "99_Archive/Clippings";
+            if (!this.app.vault.getAbstractFileByPath(clipPath)) {
+                await this.app.vault.createFolder(clipPath);
+            }
+            await this.app.fileManager.renameFile(file, `${clipPath}/${file.name}`);
+            new obsidian.Notice(`Archived article to Clippings.`);
+        } else {
+            new obsidian.Notice(`Marked status: archived (Archive folder not local).`);
         }
     }
 }
@@ -491,6 +1287,117 @@ except Exception as e:
                             }
                         }));
             }
+
+            // AI Triage & Routing Settings (Collapsible details card)
+            containerEl.createEl('hr');
+            const aiDetails = containerEl.createEl('details');
+            aiDetails.style.marginBottom = '20px';
+            aiDetails.style.border = '1px solid var(--background-modifier-border)';
+            aiDetails.style.borderRadius = '6px';
+            aiDetails.style.padding = '8px';
+            const aiSummary = aiDetails.createEl('summary', { text: '🧠 AI Triage & Routing Settings' });
+            aiSummary.style.cursor = 'pointer';
+            aiSummary.style.fontSize = '1.2em';
+            aiSummary.style.fontWeight = 'bold';
+            aiSummary.style.color = 'var(--text-accent)';
+
+            const aiContainer = aiDetails.createDiv();
+            aiContainer.style.paddingTop = '10px';
+
+            new obsidian.Setting(aiContainer)
+                .setName('LLM Provider')
+                .setDesc('Select the LLM provider for note triage.')
+                .addDropdown(dropdown => dropdown
+                    .addOption('gemini', 'Google Gemini')
+                    .addOption('ollama', 'Local Ollama')
+                    .setValue(this.plugin.settings.llmProvider || 'gemini')
+                    .onChange(async (value) => {
+                        this.plugin.settings.llmProvider = value;
+                        await this.plugin.saveSettings();
+                        this.display(); // Refresh to show/hide ollama specific settings
+                    }));
+
+            new obsidian.Setting(aiContainer)
+                .setName('Model Name')
+                .setDesc('Enter the exact model identifier (e.g. gemini-2.5-flash or qwen2.5:7b).')
+                .addText(text => text
+                    .setPlaceholder('gemini-2.5-flash')
+                    .setValue(this.plugin.settings.llmModel || 'gemini-2.5-flash')
+                    .onChange(async (value) => {
+                        this.plugin.settings.llmModel = value.trim();
+                        await this.plugin.saveSettings();
+                    }));
+
+            if (this.plugin.settings.llmProvider === 'ollama') {
+                new obsidian.Setting(aiContainer)
+                    .setName('Ollama Server URL')
+                    .setDesc('Local URL for the Ollama API.')
+                    .addText(text => text
+                        .setPlaceholder('http://localhost:11434')
+                        .setValue(this.plugin.settings.ollamaUrl || 'http://localhost:11434')
+                        .onChange(async (value) => {
+                            this.plugin.settings.ollamaUrl = value.trim();
+                            await this.plugin.saveSettings();
+                        }));
+            }
+
+            // Gemini API Key
+            new obsidian.Setting(aiContainer)
+                .setName('Gemini API Key')
+                .setDesc('Secure API key stored in system keyring.')
+                .addText(text => {
+                    text.inputEl.type = 'password';
+                    text.setPlaceholder('Enter Gemini API Key');
+                    let keyId = this.plugin.settings.geminiApiKeyId || 'google-keep-sync-gemini-key';
+                    this.plugin.settings.geminiApiKeyId = keyId;
+                    this.plugin.saveSettings();
+                    
+                    Promise.resolve(this.app.secretStorage.getSecret(keyId)).then(value => {
+                        text.setValue(value || '');
+                    });
+                    text.onChange(async (value) => {
+                        await this.app.secretStorage.setSecret(keyId, value.trim());
+                    });
+                });
+
+            // Todoist Token
+            new obsidian.Setting(aiContainer)
+                .setName('Todoist API Token')
+                .setDesc('Secure Token for dispatching tasks to Todoist.')
+                .addText(text => {
+                    text.inputEl.type = 'password';
+                    text.setPlaceholder('Enter Todoist API Token');
+                    let keyId = this.plugin.settings.todoistTokenId || 'google-keep-sync-todoist-token';
+                    this.plugin.settings.todoistTokenId = keyId;
+                    this.plugin.saveSettings();
+                    
+                    Promise.resolve(this.app.secretStorage.getSecret(keyId)).then(value => {
+                        text.setValue(value || '');
+                    });
+                    text.onChange(async (value) => {
+                        await this.app.secretStorage.setSecret(keyId, value.trim());
+                    });
+                });
+
+            // Triage Rules Configuration (JSON Textarea)
+            new obsidian.Setting(aiContainer)
+                .setName('Triage Categories & Rules (JSON)')
+                .setDesc('Configure classification prompt descriptions and target note destination paths.')
+                .addTextArea(text => {
+                    text.inputEl.style.width = '100%';
+                    text.inputEl.style.height = '200px';
+                    text.inputEl.style.fontFamily = 'monospace';
+                    text.setValue(JSON.stringify(this.plugin.settings.triageRules || [], null, 2));
+                    text.onChange(async (value) => {
+                        try {
+                            const parsed = JSON.parse(value);
+                            this.plugin.settings.triageRules = parsed;
+                            await this.plugin.saveSettings();
+                        } catch (e) {
+                            // Suppress syntax error warnings during typing, parse valid JSON on save
+                        }
+                    });
+                });
 
         } catch (e) {
             console.error("Google Keep Sync settings tab display error:", e);
