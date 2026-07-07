@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
     ollamaUrl: 'http://localhost:11434',
     geminiApiKeyId: 'google-keep-sync-gemini-key',
     todoistTokenId: 'google-keep-sync-todoist-token',
+    incubationThresholdDays: 14,
     triageRules: [
         {
             category: "daughter_quote",
@@ -98,6 +99,66 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 })
                 .sort((a, b) => b.stat.ctime - a.stat.ctime)
                 .slice(0, limit);
+
+                // Check for expired imports (older than incubationThresholdDays)
+                const thresholdDays = this.settings.incubationThresholdDays || 14;
+                const expiredFiles = [];
+                const nowMoment = moment();
+                
+                const allUnroutedFiles = this.app.vault.getMarkdownFiles().filter(file => {
+                    const norm = file.path.replace(/\\/g, '/');
+                    return norm.startsWith(sourceFolder + '/') && file.name !== "00_Triage_Console.md" && !norm.includes('/media/');
+                });
+
+                for (let file of allUnroutedFiles) {
+                    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+                    if (fm && fm.triage_classified && fm.triage_category === 'article') {
+                        const ctime = moment(file.stat.ctime);
+                        const diffDays = nowMoment.diff(ctime, 'days');
+                        if (diffDays >= thresholdDays) {
+                            expiredFiles.push({ file, fm, age: diffDays });
+                        }
+                    }
+                }
+
+                if (expiredFiles.length > 0) {
+                    const alertBox = wrapper.createDiv();
+                    alertBox.style.backgroundColor = 'var(--background-secondary-alt)';
+                    alertBox.style.border = '1px dashed var(--text-warning)';
+                    alertBox.style.borderRadius = '8px';
+                    alertBox.style.padding = '12px 16px';
+                    alertBox.style.marginBottom = '20px';
+                    alertBox.style.display = 'flex';
+                    alertBox.style.justifyContent = 'space-between';
+                    alertBox.style.alignItems = 'center';
+
+                    const alertText = alertBox.createDiv();
+                    alertText.innerHTML = `⚠️ <strong>Learning Queue Incubation Alert:</strong> You have <strong>${expiredFiles.length}</strong> unread article note(s) in the inbox that have been sitting there for more than ${thresholdDays} days.`;
+                    alertText.style.color = 'var(--text-warning)';
+
+                    const btnMoveExpired = alertBox.createEl('button', { text: '📥 Move all to Incubator' });
+                    btnMoveExpired.style.backgroundColor = 'var(--text-warning)';
+                    btnMoveExpired.style.color = 'var(--background-primary)';
+                    btnMoveExpired.style.fontWeight = 'bold';
+                    btnMoveExpired.onclick = async () => {
+                        btnMoveExpired.disabled = true;
+                        new obsidian.Notice(`Moving ${expiredFiles.length} expired articles to Incubator...`);
+                        for (let expired of expiredFiles) {
+                            const { file, fm } = expired;
+                            let targetPath = fm.triage_suggested_path || `01_Incubator/${file.name}`;
+                            if (!targetPath.startsWith("01_Incubator/")) {
+                                targetPath = `01_Incubator/${file.name}`;
+                            }
+                            try {
+                                await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary || "None", targetPath, fm.triage_topic || "General Research");
+                            } catch (e) {
+                                console.error(`Failed to move expired file ${file.name}:`, e);
+                            }
+                        }
+                        new obsidian.Notice("Expired articles successfully moved!");
+                        await renderConsole();
+                    };
+                }
                 
                 // Auto-archiver
                 const archiveFolder = this.app.vault.getAbstractFileByPath("99_Archive");
@@ -219,22 +280,17 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 };
                 
                 const rulesList = this.settings.triageRules || [];
-                const categoriesMap = {};
+                const categoriesInfo = {};
                 for (const r of rulesList) {
-                    categoriesMap[r.category] = {
-                        title: r.displayName,
-                        buttonLabel: r.buttonLabel,
+                    categoriesInfo[r.category] = {
+                        title: r.displayName || r.category,
+                        buttonLabel: r.buttonLabel || "Move",
                         targetPath: r.targetPath
                     };
                 }
-                const categoriesInfo = Object.assign({
-                    daughter_quote: { title: "💬 Esther's Quotes", buttonLabel: "💬 Append to Esther" },
-                    bumper_sticker: { title: "🚗 Jokes & Bumper Stickers", buttonLabel: "🚗 Append to Stickers" },
-                    diary_entry: { title: "📝 Diary & Journal Entries", buttonLabel: "📝 Log to Daily" },
-                    task: { title: "✅ Tasks & Reminders", buttonLabel: "✅ Todoist" },
-                    article: { title: "🎓 Articles & Web URLs", buttonLabel: "📥 Send to Incubator" },
-                    suggested_note: { title: "📂 Evolving Logs & Topics", buttonLabel: "📝 Append" }
-                }, categoriesMap);
+                if (!categoriesInfo.suggested_note) {
+                    categoriesInfo.suggested_note = { title: "📂 Evolving Logs & Topics", buttonLabel: "📝 Append" };
+                }
                 
                 for (let cat of Object.keys(categoriesInfo)) {
                     const items = groups[cat];
@@ -417,6 +473,27 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+    }
+
+    findDuplicateUrl(url, currentFilePath) {
+        if (!url) return null;
+        const normalizedUrl = url.trim().toLowerCase().replace(/\/$/, "");
+        
+        const markdownFiles = this.app.vault.getMarkdownFiles();
+        for (let file of markdownFiles) {
+            if (file.path === currentFilePath) continue;
+            const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+            if (fm) {
+                const fmUrl = fm.url || fm.triage_url;
+                if (fmUrl) {
+                    const normFmUrl = String(fmUrl).trim().toLowerCase().replace(/\/$/, "");
+                    if (normFmUrl === normalizedUrl) {
+                        return file;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     async runKeepSync() {
@@ -647,6 +724,12 @@ except Exception as e:
         }
         
         if (targetUrl) {
+            const duplicateFile = this.findDuplicateUrl(targetUrl, file.path);
+            if (duplicateFile) {
+                new obsidian.Notice(`URL already exists in vault: "${duplicateFile.basename}". Trashing duplicate Keep import.`, 5000);
+                await this.app.vault.trash(file, true);
+                return;
+            }
             const page = await this.scrapeUrl(targetUrl);
             let title = file.basename;
             let body = content;
@@ -716,6 +799,16 @@ Response MUST be a JSON object with these exact keys:
                 fm['triage_title'] = cleanTitle;
                 fm['triage_topic'] = topic;
             });
+
+            // Store newly imported web page notes inside "00_Imports/Learning Queue/"
+            const queueFolder = "00_Imports/Learning Queue";
+            if (!this.app.vault.getAbstractFileByPath(queueFolder)) {
+                await this.app.vault.createFolder(queueFolder);
+            }
+            const queuePath = `${queueFolder}/${cleanFilename}`;
+            if (file.path !== queuePath) {
+                await this.app.fileManager.renameFile(file, queuePath);
+            }
         } else {
             // Build prompt dynamically from settings
             const rules = this.settings.triageRules || [];
@@ -1379,25 +1472,174 @@ except Exception as e:
                     });
                 });
 
-            // Triage Rules Configuration (JSON Textarea)
+            // Incubation Threshold Setting
             new obsidian.Setting(aiContainer)
-                .setName('Triage Categories & Rules (JSON)')
-                .setDesc('Configure classification prompt descriptions and target note destination paths.')
-                .addTextArea(text => {
-                    text.inputEl.style.width = '100%';
-                    text.inputEl.style.height = '200px';
-                    text.inputEl.style.fontFamily = 'monospace';
-                    text.setValue(JSON.stringify(this.plugin.settings.triageRules || [], null, 2));
-                    text.onChange(async (value) => {
-                        try {
-                            const parsed = JSON.parse(value);
-                            this.plugin.settings.triageRules = parsed;
+                .setName('Learning Queue Incubation Threshold (Days)')
+                .setDesc('Number of days unread articles sit in the inbox/queue before triggering an incubation transfer alert.')
+                .addText(text => text
+                    .setPlaceholder('14')
+                    .setValue(String(this.plugin.settings.incubationThresholdDays || 14))
+                    .onChange(async (value) => {
+                        const parsed = parseInt(value, 10);
+                        if (!isNaN(parsed) && parsed > 0) {
+                            this.plugin.settings.incubationThresholdDays = parsed;
                             await this.plugin.saveSettings();
-                        } catch (e) {
-                            // Suppress syntax error warnings during typing, parse valid JSON on save
                         }
+                    }));
+
+            // Triage Rules Configuration GUI
+            aiContainer.createEl('h3', { text: 'Triage Console Rules Configuration' });
+            
+            const rulesListContainer = aiContainer.createDiv();
+            rulesListContainer.style.border = '1px solid var(--background-modifier-border)';
+            rulesListContainer.style.borderRadius = '8px';
+            rulesListContainer.style.padding = '15px';
+            rulesListContainer.style.marginBottom = '20px';
+            rulesListContainer.style.backgroundColor = 'var(--background-primary-alt)';
+
+            const renderTriageRules = () => {
+                rulesListContainer.empty();
+                const rules = this.plugin.settings.triageRules || [];
+
+                if (rules.length === 0) {
+                    const emptyMsg = rulesListContainer.createDiv({ text: 'No triage rules configured. Create one below!' });
+                    emptyMsg.style.color = 'var(--text-muted)';
+                    emptyMsg.style.marginBottom = '10px';
+                } else {
+                    rules.forEach((rule, index) => {
+                        const ruleRow = rulesListContainer.createDiv();
+                        ruleRow.style.borderBottom = '1px solid var(--background-modifier-border)';
+                        ruleRow.style.paddingBottom = '15px';
+                        ruleRow.style.marginBottom = '15px';
+                        ruleRow.style.display = 'flex';
+                        ruleRow.style.flexDirection = 'column';
+                        ruleRow.style.gap = '8px';
+
+                        const headerRow = ruleRow.createDiv();
+                        headerRow.style.display = 'flex';
+                        headerRow.style.justifyContent = 'space-between';
+                        headerRow.style.alignItems = 'center';
+
+                        const ruleTitle = headerRow.createEl('strong', { text: rule.displayName || rule.category || 'New Rule' });
+                        ruleTitle.style.color = 'var(--text-accent)';
+
+                        const btnContainer = headerRow.createDiv();
+                        btnContainer.style.display = 'flex';
+                        btnContainer.style.gap = '4px';
+
+                        const upBtn = btnContainer.createEl('button', { text: '▲' });
+                        upBtn.disabled = index === 0;
+                        upBtn.onclick = async () => {
+                            const temp = rules[index - 1];
+                            rules[index - 1] = rule;
+                            rules[index] = temp;
+                            await this.plugin.saveSettings();
+                            renderTriageRules();
+                        };
+
+                        const downBtn = btnContainer.createEl('button', { text: '▼' });
+                        downBtn.disabled = index === rules.length - 1;
+                        downBtn.onclick = async () => {
+                            const temp = rules[index + 1];
+                            rules[index + 1] = rule;
+                            rules[index] = temp;
+                            await this.plugin.saveSettings();
+                            renderTriageRules();
+                        };
+
+                        const delBtn = btnContainer.createEl('button', { text: '🗑' });
+                        delBtn.style.color = 'var(--text-error)';
+                        delBtn.onclick = async () => {
+                            rules.splice(index, 1);
+                            await this.plugin.saveSettings();
+                            renderTriageRules();
+                        };
+
+                        const inputsGrid = ruleRow.createDiv();
+                        inputsGrid.style.display = 'grid';
+                        inputsGrid.style.gridTemplateColumns = '1fr 1fr';
+                        inputsGrid.style.gap = '10px';
+
+                        const catContainer = inputsGrid.createDiv();
+                        catContainer.createEl('label', { text: 'Category / Key:' }).style.fontSize = '0.85em';
+                        const catInput = catContainer.createEl('input', { type: 'text', value: rule.category });
+                        catInput.style.width = '100%';
+                        catInput.onchange = async () => {
+                            rule.category = catInput.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+                            await this.plugin.saveSettings();
+                        };
+
+                        const nameContainer = inputsGrid.createDiv();
+                        nameContainer.createEl('label', { text: 'Display Name:' }).style.fontSize = '0.85em';
+                        const nameInput = nameContainer.createEl('input', { type: 'text', value: rule.displayName });
+                        nameInput.style.width = '100%';
+                        nameInput.onchange = async () => {
+                            rule.displayName = nameInput.value.trim();
+                            ruleTitle.textContent = rule.displayName || rule.category || 'New Rule';
+                            await this.plugin.saveSettings();
+                        };
+
+                        const pathContainer = inputsGrid.createDiv();
+                        pathContainer.createEl('label', { text: 'Target Path (e.g. Folder/File.md or YYYY-MM-DD.md):' }).style.fontSize = '0.85em';
+                        const pathInput = pathContainer.createEl('input', { type: 'text', value: rule.targetPath });
+                        pathInput.style.width = '100%';
+                        pathInput.onchange = async () => {
+                            rule.targetPath = pathInput.value.trim();
+                            await this.plugin.saveSettings();
+                        };
+
+                        const labelContainer = inputsGrid.createDiv();
+                        labelContainer.createEl('label', { text: 'Console Button Label:' }).style.fontSize = '0.85em';
+                        const labelInput = labelContainer.createEl('input', { type: 'text', value: rule.buttonLabel || '' });
+                        labelInput.style.width = '100%';
+                        labelInput.onchange = async () => {
+                            rule.buttonLabel = labelInput.value.trim();
+                            await this.plugin.saveSettings();
+                        };
+
+                        const descRow = ruleRow.createDiv();
+                        descRow.createEl('label', { text: 'Rule Description (LLM Instructions for classification):' }).style.fontSize = '0.85em';
+                        const descInput = descRow.createEl('input', { type: 'text', value: rule.description });
+                        descInput.style.width = '100%';
+                        descInput.onchange = async () => {
+                            rule.description = descInput.value.trim();
+                            await this.plugin.saveSettings();
+                        };
+
+                        const tempContainer = ruleRow.createDiv();
+                        tempContainer.createEl('label', { text: 'Optional Template Path (for new notes):' }).style.fontSize = '0.85em';
+                        const tempInput = tempContainer.createEl('input', { type: 'text', value: rule.templatePath || '' });
+                        tempInput.style.width = '100%';
+                        tempInput.onchange = async () => {
+                            rule.templatePath = tempInput.value.trim();
+                            await this.plugin.saveSettings();
+                        };
                     });
-                });
+                }
+
+                const addRow = rulesListContainer.createDiv();
+                addRow.style.display = 'flex';
+                addRow.style.gap = '8px';
+                addRow.style.marginTop = '15px';
+                addRow.style.paddingTop = '15px';
+                addRow.style.borderTop = '2px dashed var(--background-modifier-border)';
+                addRow.style.alignItems = 'center';
+
+                const addBtn = addRow.createEl('button', { text: '＋ Add Triage Rule', cls: 'mod-cta' });
+                addBtn.onclick = async () => {
+                    rules.push({
+                        category: "new_category",
+                        displayName: "📂 New Rule Display",
+                        description: "LLM prompt classification details.",
+                        targetPath: "01_Inbox/new_file.md",
+                        buttonLabel: "📝 Append to File"
+                    });
+                    await this.plugin.saveSettings();
+                    renderTriageRules();
+                };
+            };
+
+            renderTriageRules();
 
         } catch (e) {
             console.error("Google Keep Sync settings tab display error:", e);

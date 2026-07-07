@@ -1,9 +1,9 @@
 {
   "id": "google-keep-sync",
-  "name": "Google Keep Sync",
+  "name": "Triage Console & Keep Sync",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "Syncs Google Keep notes and checklist items to your Obsidian vault securely.",
+  "description": "Syncs Google Keep notes and provides an interactive AI Triage Console to categorize and route imported content.",
   "author": "Alex Jarecki",
   "authorUrl": "",
   "isDesktopOnly": true
