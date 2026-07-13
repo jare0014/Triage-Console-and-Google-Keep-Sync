@@ -494,11 +494,20 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                         };
                         
                         if (cat === "article") {
-                            const btnArchive = actionContainer.createEl("button", { text: "📦 Archive" });
-                            btnArchive.onclick = async () => {
-                                btnArchive.disabled = true;
-                                await this.archiveArticle(file, fm.triage_url, fm.triage_summary);
-                                await renderConsole();
+                            const btnKnowledge = actionContainer.createEl("button", { text: "🎓 Knowledge" });
+                            btnKnowledge.onclick = async () => {
+                                btnKnowledge.disabled = true;
+                                const finalTopic = topicInput ? topicInput.value.trim() : (fm.triage_topic || "General Research");
+                                const filename = targetPath.split("/").pop();
+                                const knowledgePath = `03_Knowledge/${filename}`;
+                                
+                                await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary, knowledgePath, finalTopic);
+                                
+                                // Open the new file in workspace immediately
+                                const newFile = this.app.vault.getAbstractFileByPath(knowledgePath);
+                                if (newFile) {
+                                    this.app.workspace.getLeaf(false).openFile(newFile);
+                                }
                             };
                         }
                         
@@ -535,6 +544,20 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                         const btnTrash = actionContainer.createEl("button", { text: "🗑️" });
                         btnTrash.onclick = async () => {
                             btnTrash.disabled = true;
+                            // Clean up embedded attachments (e.g. podcasts, mindmaps)
+                            const cache = this.app.metadataCache.getFileCache(file);
+                            if (cache && cache.embeds) {
+                                for (let embed of cache.embeds) {
+                                    const attachmentFile = this.app.metadataCache.getFirstLinkpathDest(embed.link, file.path);
+                                    if (attachmentFile) {
+                                        try {
+                                            await this.app.vault.trash(attachmentFile, true);
+                                        } catch (err) {
+                                            console.error("Failed to trash attachment:", embed.link, err);
+                                        }
+                                    }
+                                }
+                            }
                             await this.app.vault.trash(file, true);
                             await renderConsole();
                         };
@@ -1286,12 +1309,13 @@ Content: ${content}`;
     }
 
     async keepArticle(file, title, url, summary, targetPath, topic) {
+        const status = targetPath.startsWith("03_Knowledge/") ? "stub" : "candidate";
         const structured = `---
 url: ${url}
 topic: ${topic || "General Research"}
 summarization: "${summary.replace(/"/g, '\\"')}"
 notebook_id: ""
-status: candidate
+status: ${status}
 ---
 # ${title}
 
