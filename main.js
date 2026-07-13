@@ -75,6 +75,7 @@ const DEFAULT_SETTINGS = {
 
 class GoogleKeepSyncPlugin extends obsidian.Plugin {
     async onload() {
+        this.failedClassifying = new Set();
         await this.loadSettings();
 
         // Add settings tab
@@ -203,6 +204,7 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 // Check unclassified files
                 const unclassified = [];
                 for (let f of markdownFiles) {
+                    if (this.failedClassifying && this.failedClassifying.has(f.path)) continue;
                     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
                     const needsReclassify = fm && fm.triage_category === 'article' && 
                         (!fm.triage_suggested_links || !fm.triage_summary || fm.triage_summary === "No summary available." || fm.triage_summary === "None");
@@ -223,8 +225,16 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                     for (let f of unclassified) {
                         try {
                             await this.classifyFile(f);
+                            // Check if it successfully classified
+                            const updatedFm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                            const stillNeedsReclassify = updatedFm && updatedFm.triage_category === 'article' && 
+                                (!updatedFm.triage_suggested_links || !updatedFm.triage_summary || updatedFm.triage_summary === "No summary available." || updatedFm.triage_summary === "None");
+                            if (!updatedFm || updatedFm.triage_classified !== true || stillNeedsReclassify) {
+                                if (this.failedClassifying) this.failedClassifying.add(f.path);
+                            }
                         } catch(e) {
                             console.error("Failed to classify:", f.name, e);
+                            if (this.failedClassifying) this.failedClassifying.add(f.path);
                         }
                         count++;
                         progressEl.setText(`⏳ Classifying new imports (${count}/${unclassified.length})...`);
@@ -518,6 +528,13 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
 
     async triggerNotebookLMPodcast(targetPath) {
         try {
+            const secretId = 'knowledge-pipeline-notebooklm-session';
+            const sessionJson = await Promise.resolve(this.app.secretStorage.getSecret(secretId)) || '';
+            if (!sessionJson) {
+                new obsidian.Notice("NotebookLM is not authenticated. Skipping automatic podcast generation. Please configure it in settings.");
+                return;
+            }
+            
             const pipelinePlugin = this.app.plugins.getPlugin('knowledge-pipeline');
             if (pipelinePlugin) {
                 const path = require('path');
