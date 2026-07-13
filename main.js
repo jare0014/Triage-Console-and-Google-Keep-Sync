@@ -236,8 +236,10 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                             await this.classifyFile(f);
                             // Check if it successfully classified
                             const updatedFm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                            const isGenericSummary = !updatedFm.triage_summary || updatedFm.triage_summary.startsWith("No summary available") || updatedFm.triage_summary === "None";
+                            const isGenericTitle = updatedFm.triage_title && updatedFm.triage_title.startsWith("Source ") && (updatedFm.triage_title.includes("http") || updatedFm.triage_title.includes("2026-"));
                             const stillNeedsReclassify = updatedFm && updatedFm.triage_category === 'article' && 
-                                (!updatedFm.triage_suggested_links || !updatedFm.triage_summary || updatedFm.triage_summary === "No summary available." || updatedFm.triage_summary === "None");
+                                (!updatedFm.triage_suggested_links || isGenericSummary || isGenericTitle);
                             if (!updatedFm || updatedFm.triage_classified !== true || stillNeedsReclassify) {
                                 if (this.failedClassifying) this.failedClassifying.add(f.path);
                             }
@@ -283,7 +285,6 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 btnRouteAll.onclick = async () => {
                     new obsidian.Notice("Routing all categorized notes in batch...");
                     for (let cat in groups) {
-                        if (cat === "article") continue;
                         for (let item of groups[cat]) {
                             const { file, fm } = item;
                             const path = fm.triage_suggested_path;
@@ -297,6 +298,10 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                                     await this.logDiaryEntry(file, cleanContent, date);
                                 } else if (cat === "project_todo") {
                                     await this.appendToProjectDevLog(file, path, cleanContent, date);
+                                } else if (cat === "chatbot_transcript") {
+                                    await this.saveChatbotTranscript(file, path);
+                                } else if (cat === "article") {
+                                    await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary, path, fm.triage_topic || "General Research");
                                 } else {
                                     await this.appendToNote(file, path, cleanContent, date);
                                 }
