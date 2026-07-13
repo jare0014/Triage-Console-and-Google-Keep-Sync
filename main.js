@@ -213,8 +213,8 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 for (let f of markdownFiles) {
                     if (this.failedClassifying && this.failedClassifying.has(f.path)) continue;
                     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-                    const isGenericSummary = !fm.triage_summary || fm.triage_summary.startsWith("No summary available") || fm.triage_summary === "None";
-                    const isGenericTitle = fm.triage_title && fm.triage_title.startsWith("Source ") && (fm.triage_title.includes("http") || fm.triage_title.includes("2026-"));
+                    const isGenericSummary = fm && (!fm.triage_summary || fm.triage_summary.startsWith("No summary available") || fm.triage_summary === "None");
+                    const isGenericTitle = fm && (fm.triage_title && fm.triage_title.startsWith("Source ") && (fm.triage_title.includes("http") || fm.triage_title.includes("2026-")));
                     const needsReclassify = fm && fm.triage_category === 'article' && 
                         (isGenericSummary || isGenericTitle);
                     if (!fm || fm.triage_classified !== true || needsReclassify) {
@@ -236,8 +236,8 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                             await this.classifyFile(f);
                             // Check if it successfully classified
                             const updatedFm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-                            const isGenericSummary = !updatedFm.triage_summary || updatedFm.triage_summary.startsWith("No summary available") || updatedFm.triage_summary === "None";
-                            const isGenericTitle = updatedFm.triage_title && updatedFm.triage_title.startsWith("Source ") && (updatedFm.triage_title.includes("http") || updatedFm.triage_title.includes("2026-"));
+                            const isGenericSummary = updatedFm && (!updatedFm.triage_summary || updatedFm.triage_summary.startsWith("No summary available") || updatedFm.triage_summary === "None");
+                            const isGenericTitle = updatedFm && (updatedFm.triage_title && updatedFm.triage_title.startsWith("Source ") && (updatedFm.triage_title.includes("http") || updatedFm.triage_title.includes("2026-")));
                             const stillNeedsReclassify = updatedFm && updatedFm.triage_category === 'article' && 
                                 (isGenericSummary || isGenericTitle);
                             if (!updatedFm || updatedFm.triage_classified !== true || stillNeedsReclassify) {
