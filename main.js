@@ -1114,6 +1114,10 @@ ${devLogsPrompt}
 3. For other categories, suggest a logical path based on:
 ${pathsPrompt}
 
+Additional Classification Rules:
+- If the note describes a personal daily experience, personal thoughts/logs, reflections, health entries, or a social encounter/meeting with people (such as meeting friends or people at a dinner, bar, restaurant, or event), you MUST classify it as "diary_entry".
+- Only classify as "suggested_note" if the note is a general reference topic, concept, or non-personal information. Do NOT choose "suggested_note" for personal daily logs or social encounters.
+
 Extract the note's original creation date if available (in YYYY-MM-DD format).
 
 Response MUST be a JSON object with these exact keys:
