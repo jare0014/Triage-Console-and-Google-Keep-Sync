@@ -232,6 +232,10 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                     
                     let count = 0;
                     for (let f of unclassified) {
+                        if (count > 0) {
+                            // Wait 2.5 seconds to avoid Gemini 15 RPM free tier rate limits
+                            await new Promise(r => setTimeout(r, 2500));
+                        }
                         try {
                             await this.classifyFile(f);
                             // Check if it successfully classified
@@ -1136,14 +1140,7 @@ Content: ${content}`;
                 });
             } catch (err) {
                 console.error("Semantic classification failed:", err);
-                const cleanName = file.basename.replace(/[*"\\/<>:|?]/g, "").trim() + ".md";
-                await this.app.fileManager.processFrontMatter(file, fm => {
-                    fm['triage_category'] = 'suggested_note';
-                    fm['triage_classified'] = true;
-                    fm['triage_suggested_path'] = '01_Inbox/' + cleanName;
-                    fm['triage_clean_content'] = content;
-                    fm['triage_date'] = new Date().toISOString().split('T')[0];
-                });
+                throw err;
             }
         }
     }
