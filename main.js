@@ -206,8 +206,10 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 for (let f of markdownFiles) {
                     if (this.failedClassifying && this.failedClassifying.has(f.path)) continue;
                     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+                    const isGenericSummary = !fm.triage_summary || fm.triage_summary.startsWith("No summary available") || fm.triage_summary === "None";
+                    const isGenericTitle = fm.triage_title && fm.triage_title.startsWith("Source ") && (fm.triage_title.includes("http") || fm.triage_title.includes("2026-"));
                     const needsReclassify = fm && fm.triage_category === 'article' && 
-                        (!fm.triage_suggested_links || !fm.triage_summary || fm.triage_summary === "No summary available." || fm.triage_summary === "None");
+                        (!fm.triage_suggested_links || isGenericSummary || isGenericTitle);
                     if (!fm || fm.triage_classified !== true || needsReclassify) {
                         unclassified.push(f);
                     }
