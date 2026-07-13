@@ -878,19 +878,37 @@ except Exception as e:
             if (isJson) {
                 body.generationConfig = { responseMimeType: 'application/json' };
             }
-            const res = await obsidian.requestUrl({
-                url: url,
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-            if (res.status === 200) {
-                const data = JSON.parse(res.text);
-                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (text) return text;
-                throw new Error("Empty response from Gemini.");
+            let retries = 3;
+            let delay = 1500;
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await obsidian.requestUrl({
+                        url: url,
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                    if (res.status === 200) {
+                        const data = JSON.parse(res.text);
+                        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (text) return text;
+                        throw new Error("Empty response from Gemini.");
+                    }
+                    throw new Error(`Gemini error: ${res.status}`);
+                } catch (e) {
+                    const errMsg = (e.message || String(e)).toLowerCase();
+                    const isTransient = errMsg.includes("503") || errMsg.includes("429") || errMsg.includes("500") || errMsg.includes("rate limit") || errMsg.includes("busy");
+                    if (isTransient && i < retries - 1) {
+                        const statusMatch = errMsg.match(/status (\d+)/);
+                        const statusText = statusMatch ? statusMatch[1] : '503/429';
+                        new obsidian.Notice(`Gemini API busy or rate-limited (status ${statusText}). Retrying in ${(delay/1000).toFixed(1)}s...`);
+                        await new Promise(r => setTimeout(r, delay));
+                        delay *= 2;
+                    } else {
+                        throw e;
+                    }
+                }
             }
-            throw new Error(`Gemini error: ${res.status}`);
         }
     }
 
@@ -914,7 +932,7 @@ except Exception as e:
             const body = paragraphs.join(" ").substring(0, 3000);
             return { title, body };
         } catch (e) {
-            console.error("Scrape failed:", e);
+            console.log("Scrape failed (will fall back to URL analysis):", e.message || e);
             return null;
         }
     }
