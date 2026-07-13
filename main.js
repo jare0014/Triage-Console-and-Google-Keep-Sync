@@ -1310,57 +1310,41 @@ Content: ${content}`;
 
     async keepArticle(file, title, url, summary, targetPath, topic) {
         const status = targetPath.startsWith("03_Knowledge/") ? "stub" : "candidate";
-        const structured = `---
-url: ${url}
-topic: ${topic || "General Research"}
-summarization: "${summary.replace(/"/g, '\\"')}"
-notebook_id: ""
-status: ${status}
----
-# ${title}
-
-**Original Source**: [${url}](${url})
-
-## 📝 Summarization
-${summary}
-
-## 🛠️ NotebookLM Artifacts
-\`\`\`meta-bind-button
-label: 🧠 Generate Mind Map
-icon: "git-branch"
-style: primary
-hidden: false
-actions:
-  - type: command
-    command: knowledge-pipeline:generate-mind-map
-\`\`\`
-\`\`\`meta-bind-button
-label: 🎙️ Generate Podcast (Audio)
-icon: "headphones"
-style: primary
-hidden: false
-actions:
-  - type: command
-    command: knowledge-pipeline:generate-podcast
-\`\`\`
-\`\`\`meta-bind-button
-label: 🎬 Generate Cinematic Video
-icon: "video"
-style: primary
-hidden: false
-actions:
-  - type: command
-    command: knowledge-pipeline:generate-video
-\`\`\`
-`;
-        await this.app.vault.modify(file, structured);
+        
+        // 1. Update frontmatter keys in-place and clean up triage keys
+        await this.app.fileManager.processFrontMatter(file, fm => {
+            fm['status'] = status;
+            fm['topic'] = topic || "General Research";
+            fm['summarization'] = summary;
+            fm['url'] = url;
+            // Clean up triage keys
+            delete fm['triage_category'];
+            delete fm['triage_classified'];
+            delete fm['triage_suggested_path'];
+            delete fm['triage_url'];
+            delete fm['triage_summary'];
+            delete fm['triage_title'];
+            delete fm['triage_topic'];
+            delete fm['triage_suggested_links'];
+        });
+        
+        // 2. Replace placeholder summary in the markdown body if it exists
+        let content = await this.app.vault.read(file);
+        if (content.includes("No summary available.")) {
+            content = content.replace("No summary available.", summary);
+            await this.app.vault.modify(file, content);
+        }
+        
+        // 3. Rename/move the file to the target path
         const destPath = targetPath || `01_Incubator/${file.name}`;
         const dirPath = destPath.substring(0, destPath.lastIndexOf("/"));
         if (dirPath && !this.app.vault.getAbstractFileByPath(dirPath)) {
             await this.app.vault.createFolder(dirPath);
         }
         await this.app.fileManager.renameFile(file, destPath);
-        new obsidian.Notice(`Sent article to Incubator: ${title}`);
+        
+        const folderName = targetPath.startsWith("03_Knowledge/") ? "Knowledge" : "Incubator";
+        new obsidian.Notice(`Sent article to ${folderName}: ${title}`);
     }
 
     async archiveArticle(file, url, summary) {
