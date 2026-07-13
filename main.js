@@ -57,6 +57,13 @@ const DEFAULT_SETTINGS = {
             buttonLabel: "🚀 Append to Project"
         },
         {
+            category: "chatbot_transcript",
+            displayName: "💬 Chatbot Discussions",
+            description: "a conversation transcript, chat history, or discussion with an AI chatbot (like Claude, ChatGPT, Gemini, etc.) related to a project.",
+            targetPath: "04_Projects/",
+            buttonLabel: "💬 Save to Chatbot"
+        },
+        {
             category: "article",
             displayName: "🎓 Articles & Web URLs",
             description: "any note that contains an external article, document, or Web URL link.",
@@ -467,6 +474,8 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                                 await this.logDiaryEntry(file, fm.triage_clean_content, chosenDate);
                             } else if (cat === "project_todo") {
                                 await this.appendToProjectDevLog(file, targetPath, fm.triage_clean_content, date);
+                            } else if (cat === "chatbot_transcript") {
+                                await this.saveChatbotTranscript(file, targetPath);
                             } else if (cat === "article") {
                                 const finalTopic = topicInput ? topicInput.value.trim() : (fm.triage_topic || "General Research");
                                 await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary, targetPath, finalTopic);
@@ -676,6 +685,41 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
         await this.app.vault.modify(targetFile, newContent);
         new obsidian.Notice(`Added task to project dev log: ${targetFile.basename}`);
         await this.app.vault.trash(file, true);
+    }
+
+    async saveChatbotTranscript(file, targetPath) {
+        if (!targetPath) {
+            new obsidian.Notice("Error: No suggested path for chatbot transcript.");
+            return;
+        }
+
+        // Clean up metadata
+        await this.app.fileManager.processFrontMatter(file, fm => {
+            delete fm['triage_category'];
+            delete fm['triage_classified'];
+            delete fm['triage_suggested_path'];
+            delete fm['triage_clean_content'];
+            delete fm['triage_date'];
+            delete fm['triage_title'];
+            delete fm['triage_summary'];
+            delete fm['triage_topic'];
+            delete fm['triage_suggested_links'];
+        });
+
+        const dirPath = targetPath.substring(0, targetPath.lastIndexOf("/"));
+        if (dirPath) {
+            const parts = dirPath.split("/");
+            let currentPath = "";
+            for (let part of parts) {
+                currentPath = currentPath ? `${currentPath}/${part}` : part;
+                if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+                    await this.app.vault.createFolder(currentPath);
+                }
+            }
+        }
+
+        await this.app.fileManager.renameFile(file, targetPath);
+        new obsidian.Notice(`Saved chatbot transcript to: ${targetPath}`);
     }
 
     async loadSettings() {
@@ -1040,11 +1084,8 @@ Response MUST be a JSON object with these exact keys:
                 fm['triage_suggested_links'] = suggestedLinks;
             });
 
-            // Store newly imported web page notes inside "00_Imports/Learning Queue/"
-            const queueFolder = "00_Imports/Learning Queue";
-            if (!this.app.vault.getAbstractFileByPath(queueFolder)) {
-                await this.app.vault.createFolder(queueFolder);
-            }
+            // Store newly imported web page notes inside "00_Imports/"
+            const queueFolder = "00_Imports";
             const queuePath = `${queueFolder}/${cleanFilename}`;
             if (file.path !== queuePath) {
                 await this.app.fileManager.renameFile(file, queuePath);
@@ -1065,10 +1106,11 @@ Response MUST be a JSON object with these exact keys:
 ${categoriesPrompt}
 
 Also, suggest a logical destination path in the Obsidian vault.
-If the note belongs to a specific project (category "project_todo"), choose the exact matching project dev log path from this list:
+1. If the note belongs to a specific project (category "project_todo"), choose the exact matching project dev log path from this list:
 ${devLogsPrompt}
-
-For other categories, suggest a logical path based on:
+2. If the note is a chatbot transcript (category "chatbot_transcript"), select the matching project from the dev log list above, and suggest a destination path inside that project's folder under a subfolder named "Chatbot Discussions", formatted like:
+   04_Projects/[Project Folder Name]/Chatbot Discussions/[Descriptive Note Title].md (e.g. if the project dev log is "04_Projects/Quant/Quant Finance Project Dev Log.md", suggest a path like "04_Projects/Quant/Chatbot Discussions/Quant Flight Simulator.md").
+3. For other categories, suggest a logical path based on:
 ${pathsPrompt}
 
 Extract the note's original creation date if available (in YYYY-MM-DD format).
