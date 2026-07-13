@@ -204,7 +204,9 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                 const unclassified = [];
                 for (let f of markdownFiles) {
                     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
-                    if (!fm || fm.triage_classified !== true) {
+                    const needsReclassify = fm && fm.triage_category === 'article' && 
+                        (!fm.triage_suggested_links || !fm.triage_summary || fm.triage_summary === "No summary available." || fm.triage_summary === "None");
+                    if (!fm || fm.triage_classified !== true || needsReclassify) {
                         unclassified.push(f);
                     }
                 }
