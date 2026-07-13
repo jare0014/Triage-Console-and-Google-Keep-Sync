@@ -216,7 +216,7 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                     const isGenericSummary = !fm.triage_summary || fm.triage_summary.startsWith("No summary available") || fm.triage_summary === "None";
                     const isGenericTitle = fm.triage_title && fm.triage_title.startsWith("Source ") && (fm.triage_title.includes("http") || fm.triage_title.includes("2026-"));
                     const needsReclassify = fm && fm.triage_category === 'article' && 
-                        (!fm.triage_suggested_links || isGenericSummary || isGenericTitle);
+                        (isGenericSummary || isGenericTitle);
                     if (!fm || fm.triage_classified !== true || needsReclassify) {
                         unclassified.push(f);
                     }
@@ -239,7 +239,7 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                             const isGenericSummary = !updatedFm.triage_summary || updatedFm.triage_summary.startsWith("No summary available") || updatedFm.triage_summary === "None";
                             const isGenericTitle = updatedFm.triage_title && updatedFm.triage_title.startsWith("Source ") && (updatedFm.triage_title.includes("http") || updatedFm.triage_title.includes("2026-"));
                             const stillNeedsReclassify = updatedFm && updatedFm.triage_category === 'article' && 
-                                (!updatedFm.triage_suggested_links || isGenericSummary || isGenericTitle);
+                                (isGenericSummary || isGenericTitle);
                             if (!updatedFm || updatedFm.triage_classified !== true || stillNeedsReclassify) {
                                 if (this.failedClassifying) this.failedClassifying.add(f.path);
                             }
@@ -378,8 +378,7 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                         
                         let displayContent = fm.triage_clean_content || file.basename;
                         if (cat === "article") {
-                            const linksStr = fm.triage_suggested_links || "None";
-                            displayContent = `<strong>Summary:</strong> ${fm.triage_summary || "None"}<br><strong>Suggested Links:</strong> ${linksStr}<br><a href="${fm.triage_url}" target="_blank">${fm.triage_url}</a>`;
+                            displayContent = `<strong>Summary:</strong> ${fm.triage_summary || "None"}<br><a href="${fm.triage_url}" target="_blank">${fm.triage_url}</a>`;
                         }
                         
                         const targetFileExists = this.app.vault.getAbstractFileByPath(targetPath);
@@ -1027,15 +1026,13 @@ Instructions:
 3. Suggest a clean, descriptive title for the article. Do NOT use generic names like "Source Phys.org" or "Source Article".
 4. Suggest a safe, clean filename for saving it in the vault (with .md extension, removing all characters that are invalid in Windows/Mac filenames: * " \\ / < > : | ?).
 5. Suggest a concise one- or two-word topic classification (e.g. "Physics", "Artificial Intelligence", "Evolutionary Biology", "History", "Finance", etc.).
-6. Suggest 2-3 key terms, names, or related topics in this vault that we should link this note to.
 
 Response MUST be a JSON object with these exact keys:
 {
   "summary": "the 2-3 sentence summary",
   "suggested_title": "a clean, descriptive title for the article",
   "suggested_filename": "Cleaned Article Title.md",
-  "suggested_topic": "concise one- or two-word topic",
-  "suggested_keywords": ["keyword1", "keyword2", "keyword3"]
+  "suggested_topic": "concise one- or two-word topic"
 }
 `;
             
@@ -1043,7 +1040,6 @@ Response MUST be a JSON object with these exact keys:
             let cleanTitle = title;
             let cleanFilename = file.name;
             let suggestedTopic = "";
-            let suggestedKeywords = [];
             
             try {
                 const resText = await this.callLLM(articlePrompt, true);
@@ -1052,7 +1048,6 @@ Response MUST be a JSON object with these exact keys:
                 cleanTitle = result.suggested_title || title;
                 cleanFilename = result.suggested_filename || file.name;
                 suggestedTopic = result.suggested_topic || "";
-                suggestedKeywords = result.suggested_keywords || [];
                 cleanFilename = cleanFilename.replace(/[*"\\/<>:|?]/g, "").trim();
                 if (!cleanFilename.endsWith(".md")) {
                     cleanFilename += ".md";
@@ -1076,8 +1071,6 @@ Response MUST be a JSON object with these exact keys:
                 }
             }
             
-            const suggestedLinks = this.suggestLinks(suggestedKeywords, topic, cleanTitle);
-            
             await this.app.fileManager.processFrontMatter(file, fm => {
                 fm['triage_category'] = 'article';
                 fm['triage_classified'] = true;
@@ -1086,7 +1079,6 @@ Response MUST be a JSON object with these exact keys:
                 fm['triage_summary'] = summary;
                 fm['triage_title'] = cleanTitle;
                 fm['triage_topic'] = topic;
-                fm['triage_suggested_links'] = suggestedLinks;
             });
 
             // Store newly imported web page notes inside "00_Imports/"
@@ -1293,9 +1285,6 @@ Content: ${content}`;
     }
 
     async keepArticle(file, title, url, summary, targetPath, topic) {
-        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-        const suggestedLinks = fm?.triage_suggested_links || "";
-
         const structured = `---
 url: ${url}
 topic: ${topic || "General Research"}
@@ -1310,7 +1299,6 @@ status: candidate
 ## 📝 Summarization
 ${summary}
 
-${suggestedLinks ? `## 🔗 Suggested Links\n${suggestedLinks}\n` : ""}
 ## 🛠️ NotebookLM Artifacts
 \`\`\`meta-bind-button
 label: 🧠 Generate Mind Map
