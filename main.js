@@ -50,6 +50,13 @@ const DEFAULT_SETTINGS = {
             buttonLabel: "✅ Todoist"
         },
         {
+            category: "project_todo",
+            displayName: "🚀 Project Tasks & Ideas",
+            description: "an idea, task, bug, or feature request related to one of my projects.",
+            targetPath: "04_Projects/",
+            buttonLabel: "🚀 Append to Project"
+        },
+        {
             category: "article",
             displayName: "🎓 Articles & Web URLs",
             description: "any note that contains an external article, document, or Web URL link.",
@@ -267,6 +274,8 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                                     await this.createTodoistTask(file, cleanContent);
                                 } else if (cat === "diary_entry") {
                                     await this.logDiaryEntry(file, cleanContent, date);
+                                } else if (cat === "project_todo") {
+                                    await this.appendToProjectDevLog(file, path, cleanContent, date);
                                 } else {
                                     await this.appendToNote(file, path, cleanContent, date);
                                 }
@@ -333,7 +342,8 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                         
                         let displayContent = fm.triage_clean_content || file.basename;
                         if (cat === "article") {
-                            displayContent = `<strong>Summary:</strong> ${fm.triage_summary || "None"}<br><a href="${fm.triage_url}" target="_blank">${fm.triage_url}</a>`;
+                            const linksStr = fm.triage_suggested_links || "None";
+                            displayContent = `<strong>Summary:</strong> ${fm.triage_summary || "None"}<br><strong>Suggested Links:</strong> ${linksStr}<br><a href="${fm.triage_url}" target="_blank">${fm.triage_url}</a>`;
                         }
                         
                         const targetFileExists = this.app.vault.getAbstractFileByPath(targetPath);
@@ -375,8 +385,37 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                         }
                         
                         // Column 3: Target Suggestion
-                        const tdTarget = row.createEl('td', { text: targetDisplay });
+                        const tdTarget = row.createEl('td');
                         tdTarget.style.padding = '8px';
+                        let dateSelect = null;
+                        if (cat === "diary_entry") {
+                            // Render a dropdown with the last 7 days
+                            dateSelect = tdTarget.createEl("select");
+                            dateSelect.style.padding = "4px";
+                            dateSelect.style.borderRadius = "4px";
+                            dateSelect.style.border = "1px solid var(--border-color)";
+                            
+                            const dates = [];
+                            for (let i = 0; i < 7; i++) {
+                                const d = moment().subtract(i, 'days');
+                                const label = i === 0 ? "Today" : i === 1 ? "Yesterday" : `${i} days ago`;
+                                dates.push({ value: d.format("YYYY-MM-DD"), label: `${label} (${d.format("YYYY-MM-DD")})` });
+                            }
+                            
+                            // If frontmatter date exists and is not in the list, prepend it
+                            if (date && !dates.some(x => x.value === date)) {
+                                dates.unshift({ value: date, label: `Extracted (${date})` });
+                            }
+                            
+                            for (let d of dates) {
+                                const opt = dateSelect.createEl("option", { text: d.label, value: d.value });
+                                if (d.value === (date || moment().format("YYYY-MM-DD"))) {
+                                    opt.selected = true;
+                                }
+                            }
+                        } else {
+                            tdTarget.setText(targetDisplay);
+                        }
                         
                         // Column 4: Content/Summary
                         const tdContent = row.createEl('td');
@@ -400,7 +439,10 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                             if (cat === "task") {
                                 await this.createTodoistTask(file, fm.triage_clean_content);
                             } else if (cat === "diary_entry") {
-                                await this.logDiaryEntry(file, fm.triage_clean_content, date);
+                                const chosenDate = dateSelect ? dateSelect.value : (date || moment().format("YYYY-MM-DD"));
+                                await this.logDiaryEntry(file, fm.triage_clean_content, chosenDate);
+                            } else if (cat === "project_todo") {
+                                await this.appendToProjectDevLog(file, targetPath, fm.triage_clean_content, date);
                             } else if (cat === "article") {
                                 const finalTopic = topicInput ? topicInput.value.trim() : (fm.triage_topic || "General Research");
                                 await this.keepArticle(file, fm.triage_title || file.basename, fm.triage_url, fm.triage_summary, targetPath, finalTopic);
@@ -429,16 +471,21 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                                 <option value="01_Inbox">📥 Inbox</option>
                                 <option value="01_Incubator">❔ Incubator</option>
                                 <option value="03_Knowledge">🎓 Knowledge (stub)</option>
+                                <option value="todoist">✅ Todoist</option>
                             `;
                             dropdown.onchange = async () => {
                                 const val = dropdown.value;
                                 if (!val) return;
                                 dropdown.disabled = true;
-                                if (val === "03_Knowledge") {
-                                    await this.app.fileManager.processFrontMatter(file, fMatter => fMatter['status'] = 'stub');
+                                if (val === "todoist") {
+                                    await this.createTodoistTask(file, fm.triage_clean_content || file.basename);
+                                } else {
+                                    if (val === "03_Knowledge") {
+                                        await this.app.fileManager.processFrontMatter(file, fMatter => fMatter['status'] = 'stub');
+                                    }
+                                    await this.app.fileManager.renameFile(file, `${val}/${file.name}`);
+                                    new obsidian.Notice(`Moved to ${val}`);
                                 }
-                                await this.app.fileManager.renameFile(file, `${val}/${file.name}`);
-                                new obsidian.Notice(`Moved to ${val}`);
                                 await renderConsole();
                             };
                             btnManual.replaceWith(dropdown);
@@ -465,6 +512,139 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
             }
             this.setupIntervalSync();
         });
+    }
+
+    async triggerNotebookLMPodcast(targetPath) {
+        try {
+            const pipelinePlugin = this.app.plugins.getPlugin('knowledge-pipeline');
+            if (pipelinePlugin) {
+                const path = require('path');
+                const vaultPath = this.app.vault.adapter.getBasePath();
+                const absoluteFilePath = path.join(vaultPath, targetPath);
+                
+                new obsidian.Notice(`Triggering NotebookLM Podcast generation for ${path.basename(targetPath)}...`);
+                pipelinePlugin.runArtifactGeneratorForFile(absoluteFilePath, 'audio');
+            } else {
+                new obsidian.Notice("Knowledge Pipeline plugin is not enabled/installed. Cannot generate podcast automatically.");
+            }
+        } catch (e) {
+            console.error("Failed to trigger NotebookLM podcast:", e);
+        }
+    }
+
+    suggestLinks(keywords, topic, title) {
+        const related = [];
+        const allFiles = this.app.vault.getMarkdownFiles();
+        
+        const candidates = new Set();
+        if (topic) candidates.add(topic.toLowerCase());
+        if (keywords && Array.isArray(keywords)) {
+            for (let kw of keywords) {
+                candidates.add(kw.toLowerCase());
+            }
+        }
+        
+        const titleWords = title.toLowerCase().split(/[^a-zA-Z0-9]/).filter(w => w.length > 4);
+        for (let w of titleWords) {
+            if (!["about", "world", "article", "source", "review", "guide", "paper", "video", "notes"].includes(w)) {
+                candidates.add(w);
+            }
+        }
+
+        for (let file of allFiles) {
+            const fileNameLower = file.basename.toLowerCase();
+            if (file.path.startsWith("00_Imports/") || file.basename === title) continue;
+            
+            let match = false;
+            for (let cand of candidates) {
+                if (fileNameLower === cand || fileNameLower.includes(" " + cand) || fileNameLower.includes(cand + " ")) {
+                    match = true;
+                    break;
+                }
+            }
+            if (match) {
+                related.push(`[[${file.basename}]]`);
+                if (related.length >= 4) break;
+            }
+        }
+        return related.join(", ");
+    }
+
+    async ensurePeopleNotes(content) {
+        const atNames = content.match(/@([A-Z][a-zA-Z0-9_-]+)/g) || [];
+        const wikiNames = [];
+        const wikiRegex = /\[\[([a-zA-Z0-9\s_-]+)(?:\|[^\]]*)?\]\]/g;
+        let match;
+        while ((match = wikiRegex.exec(content)) !== null) {
+            wikiNames.push(match[1].trim());
+        }
+
+        const uniqueNames = new Set();
+        for (let name of atNames) {
+            uniqueNames.add(name.substring(1));
+        }
+        for (let name of wikiNames) {
+            if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?$/.test(name)) {
+                uniqueNames.add(name);
+            }
+        }
+
+        const templateFile = this.app.vault.getAbstractFileByPath("99_System/Templates/Person_Template.md");
+        let templateContent = "";
+        if (templateFile) {
+            templateContent = await this.app.vault.read(templateFile);
+        }
+
+        for (let name of uniqueNames) {
+            const personPath = `05_People/${name}.md`;
+            const exists = this.app.vault.getAbstractFileByPath(personPath);
+            if (!exists) {
+                let noteContent = templateContent 
+                    ? templateContent.replace(/#\s+\[\/\[Person_Template\|Person_Template\]\/\]/g, `# [[${name}|${name}]]`).replace(/#\s+\[\[Person_Template\|Person_Template\]\]/g, `# [[${name}|${name}]]`)
+                    : `# [[${name}]]\n\n`;
+                
+                const dirPath = "05_People";
+                if (!this.app.vault.getAbstractFileByPath(dirPath)) {
+                    await this.app.vault.createFolder(dirPath);
+                }
+                await this.app.vault.create(personPath, noteContent);
+                new obsidian.Notice(`Generated people note for: ${name}`);
+            }
+        }
+
+        let newContent = content;
+        for (let name of uniqueNames) {
+            const regex = new RegExp(`@${name}\\b`, 'g');
+            newContent = newContent.replace(regex, `[[${name}]]`);
+        }
+        return newContent;
+    }
+
+    async appendToProjectDevLog(file, targetPath, cleanContent, dateStr) {
+        let targetFile = this.app.vault.getAbstractFileByPath(targetPath);
+        if (!targetFile) {
+            new obsidian.Notice(`Error: Project dev log not found at ${targetPath}`);
+            return;
+        }
+
+        let content = await this.app.vault.read(targetFile);
+        let formattedDate = dateStr || new Date().toISOString().split('T')[0];
+        
+        cleanContent = await this.ensurePeopleNotes(cleanContent);
+        
+        const taskLine = `\n- [ ] ${cleanContent} (Added: ${formattedDate})\n`;
+
+        let newContent;
+        if (content.includes("## ToDo")) {
+            const idx = content.indexOf("## ToDo") + "## ToDo".length;
+            newContent = content.substring(0, idx) + "\n" + taskLine.trim() + "\n" + content.substring(idx);
+        } else {
+            newContent = content.trimEnd() + "\n\n## ToDo\n" + taskLine;
+        }
+
+        await this.app.vault.modify(targetFile, newContent);
+        new obsidian.Notice(`Added task to project dev log: ${targetFile.basename}`);
+        await this.app.vault.trash(file, true);
     }
 
     async loadSettings() {
@@ -739,19 +919,25 @@ except Exception as e:
             }
             
             const articlePrompt = `You are a personal reading assistant. Analyze this web page content.
+URL: ${targetUrl}
 Title: ${title}
 Content: ${body}
 
-Generate a concise 2-3 sentence summary (no double quotes). Suggest a clean, descriptive title for the article, a safe, clean filename for saving it in the vault (with .md extension, removing all characters that are invalid in Windows/Mac filenames: * " \\ / < > : | ?), and a concise one- or two-word topic classification (e.g. "Physics", "Artificial Intelligence", "Evolutionary Biology", "History", etc.).
-
-Note: If the content is short and contains a web URL, extract and infer a clean, descriptive title and filename from the URL path/slug. Do NOT use generic names like "Source Phys.org" or "Source Article".
+Instructions:
+1. Generate a concise 2-3 sentence summary of the article (do NOT use double quotes in the summary).
+2. If the content above is empty, incomplete, or contains only a URL (meaning scraping failed), use your external knowledge of the URL or analyze the URL path/slug to infer a descriptive title, a 2-3 sentence summary of what the article is about, and a proper topic. Do NOT return "No summary available" or generic text.
+3. Suggest a clean, descriptive title for the article. Do NOT use generic names like "Source Phys.org" or "Source Article".
+4. Suggest a safe, clean filename for saving it in the vault (with .md extension, removing all characters that are invalid in Windows/Mac filenames: * " \\ / < > : | ?).
+5. Suggest a concise one- or two-word topic classification (e.g. "Physics", "Artificial Intelligence", "Evolutionary Biology", "History", "Finance", etc.).
+6. Suggest 2-3 key terms, names, or related topics in this vault that we should link this note to.
 
 Response MUST be a JSON object with these exact keys:
 {
   "summary": "the 2-3 sentence summary",
   "suggested_title": "a clean, descriptive title for the article",
   "suggested_filename": "Cleaned Article Title.md",
-  "suggested_topic": "concise one- or two-word topic"
+  "suggested_topic": "concise one- or two-word topic",
+  "suggested_keywords": ["keyword1", "keyword2", "keyword3"]
 }
 `;
             
@@ -759,6 +945,7 @@ Response MUST be a JSON object with these exact keys:
             let cleanTitle = title;
             let cleanFilename = file.name;
             let suggestedTopic = "";
+            let suggestedKeywords = [];
             
             try {
                 const resText = await this.callLLM(articlePrompt, true);
@@ -767,6 +954,7 @@ Response MUST be a JSON object with these exact keys:
                 cleanTitle = result.suggested_title || title;
                 cleanFilename = result.suggested_filename || file.name;
                 suggestedTopic = result.suggested_topic || "";
+                suggestedKeywords = result.suggested_keywords || [];
                 cleanFilename = cleanFilename.replace(/[*"\\/<>:|?]/g, "").trim();
                 if (!cleanFilename.endsWith(".md")) {
                     cleanFilename += ".md";
@@ -790,6 +978,8 @@ Response MUST be a JSON object with these exact keys:
                 }
             }
             
+            const suggestedLinks = this.suggestLinks(suggestedKeywords, topic, cleanTitle);
+            
             await this.app.fileManager.processFrontMatter(file, fm => {
                 fm['triage_category'] = 'article';
                 fm['triage_classified'] = true;
@@ -798,6 +988,7 @@ Response MUST be a JSON object with these exact keys:
                 fm['triage_summary'] = summary;
                 fm['triage_title'] = cleanTitle;
                 fm['triage_topic'] = topic;
+                fm['triage_suggested_links'] = suggestedLinks;
             });
 
             // Store newly imported web page notes inside "00_Imports/Learning Queue/"
@@ -809,16 +1000,26 @@ Response MUST be a JSON object with these exact keys:
             if (file.path !== queuePath) {
                 await this.app.fileManager.renameFile(file, queuePath);
             }
+            
+            // Trigger NotebookLM podcast generation immediately
+            this.triggerNotebookLMPodcast(queuePath);
         } else {
             // Build prompt dynamically from settings
             const rules = this.settings.triageRules || [];
             const categoriesPrompt = rules.map(r => `- "${r.category}": ${r.description}`).join("\n");
             const pathsPrompt = rules.map(r => `- ${r.displayName} -> "${r.targetPath}"`).join("\n");
             
+            const devLogs = this.app.vault.getMarkdownFiles().filter(f => f.path.startsWith("04_Projects/") && f.name.endsWith("Dev Log.md"));
+            const devLogsPrompt = devLogs.map(f => `- "${f.basename}" -> "${f.path}"`).join("\n");
+            
             const prompt = `You are a personal assistant. Analyze the note below and classify it into one of these categories:
 ${categoriesPrompt}
 
-Also, suggest a logical destination path in the Obsidian vault:
+Also, suggest a logical destination path in the Obsidian vault.
+If the note belongs to a specific project (category "project_todo"), choose the exact matching project dev log path from this list:
+${devLogsPrompt}
+
+For other categories, suggest a logical path based on:
 ${pathsPrompt}
 
 Extract the note's original creation date if available (in YYYY-MM-DD format).
@@ -860,6 +1061,7 @@ Content: ${content}`;
     }
 
     async appendToNote(file, targetPath, cleanContent, dateStr) {
+        cleanContent = await this.ensurePeopleNotes(cleanContent);
         let formattedDate = new Date().toISOString().split('T')[0];
         if (dateStr) {
             formattedDate = dateStr;
@@ -900,6 +1102,7 @@ Content: ${content}`;
     }
 
     async logDiaryEntry(file, cleanContent, dateStr) {
+        cleanContent = await this.ensurePeopleNotes(cleanContent);
         let actualDateStr = new Date().toISOString().split('T')[0];
         if (dateStr) {
             actualDateStr = dateStr;
@@ -994,6 +1197,9 @@ Content: ${content}`;
     }
 
     async keepArticle(file, title, url, summary, targetPath, topic) {
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        const suggestedLinks = fm?.triage_suggested_links || "";
+
         const structured = `---
 url: ${url}
 topic: ${topic || "General Research"}
@@ -1008,6 +1214,7 @@ status: candidate
 ## 📝 Summarization
 ${summary}
 
+${suggestedLinks ? `## 🔗 Suggested Links\n${suggestedLinks}\n` : ""}
 ## 🛠️ NotebookLM Artifacts
 \`\`\`meta-bind-button
 label: 🧠 Generate Mind Map
