@@ -37,7 +37,7 @@ const DEFAULT_SETTINGS = {
         {
             category: "diary_entry",
             displayName: "📝 Diary & Journal Entries",
-            description: "personal thoughts, logs, reflections, health notes, daily activities, or journal entries.",
+            description: "diary, journal, personal daily activity logs, reflections, social/people encounters, health logs, or general journal entries.",
             targetPath: "02_Journal/01_Daily/YYYY-MM-DD.md",
             buttonLabel: "📝 Log to Daily",
             templatePath: "99_System/Templates/Daily Note Template.md"
@@ -73,7 +73,7 @@ const DEFAULT_SETTINGS = {
         {
             category: "suggested_note",
             displayName: "📂 Evolving Logs & Topics",
-            description: "any other general log, entity, reference, or idea that belongs in a specific file.",
+            description: "general reference notes, non-personal topics, or concepts that belong in a specific stub or topic-focused file (but NOT personal daily activities or journal logs).",
             targetPath: "01_Inbox/",
             buttonLabel: "📝 Append"
         }
