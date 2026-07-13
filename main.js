@@ -300,6 +300,16 @@ class GoogleKeepSyncPlugin extends obsidian.Plugin {
                     await renderConsole();
                 };
                 
+                if (this.failedClassifying && this.failedClassifying.size > 0) {
+                    const btnRetry = batchContainer.createEl("button", { text: `🔄 Retry ${this.failedClassifying.size} Failed` });
+                    btnRetry.style.padding = "6px 12px";
+                    btnRetry.onclick = async () => {
+                        this.failedClassifying.clear();
+                        new obsidian.Notice("Retrying failed classifications...");
+                        await renderConsole();
+                    };
+                }
+                
                 const rulesList = this.settings.triageRules || [];
                 const categoriesInfo = {};
                 for (const r of rulesList) {
